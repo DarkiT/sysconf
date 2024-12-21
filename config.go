@@ -668,10 +668,12 @@ func parseFloat(s string) (float64, error) {
 }
 
 func parseSlice(s string, t reflect.Type) (reflect.Value, error) {
+	// 处理空字符串情况
 	if s == "" {
 		return reflect.MakeSlice(t, 0, 0), nil
 	}
 
+	// 尝试解析 JSON 数组
 	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
 		var slice []interface{}
 		if err := json.Unmarshal([]byte(s), &slice); err == nil {
@@ -679,6 +681,12 @@ func parseSlice(s string, t reflect.Type) (reflect.Value, error) {
 		}
 	}
 
+	// 处理逗号分隔的字符串
+	return parseCommaDelimitedSlice(s, t)
+}
+
+// 处理逗号分隔的字符串
+func parseCommaDelimitedSlice(s string, t reflect.Type) (reflect.Value, error) {
 	parts := strings.Split(s, ",")
 	slice := reflect.MakeSlice(t, len(parts), len(parts))
 
@@ -686,45 +694,72 @@ func parseSlice(s string, t reflect.Type) (reflect.Value, error) {
 		part = strings.TrimSpace(part)
 		val := reflect.New(t.Elem()).Elem()
 
-		var err error
-		switch t.Elem().Kind() {
-		case reflect.String:
-			val.SetString(part)
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			var n int64
-			n, err = parseInt(part)
-			if err == nil {
-				val.SetInt(n)
-			}
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			var n uint64
-			n, err = parseUint(part)
-			if err == nil {
-				val.SetUint(n)
-			}
-		case reflect.Float32, reflect.Float64:
-			var n float64
-			n, err = parseFloat(part)
-			if err == nil {
-				val.SetFloat(n)
-			}
-		case reflect.Bool:
-			var b bool
-			b, err = parseBool(part)
-			if err == nil {
-				val.SetBool(b)
-			}
-		default:
-			return reflect.Value{}, fmt.Errorf("unsupported slice element type: %s", t.Elem().Kind())
-		}
-
-		if err != nil {
+		if err := setSliceElement(val, part, t.Elem().Kind()); err != nil {
 			return reflect.Value{}, fmt.Errorf("parse slice element %d: %w", i, err)
 		}
 		slice.Index(i).Set(val)
 	}
 
 	return slice, nil
+}
+
+// 设置切片元素的值
+func setSliceElement(val reflect.Value, part string, kind reflect.Kind) error {
+	switch kind {
+	case reflect.String:
+		val.SetString(part)
+		return nil
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return setIntElement(val, part)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return setUintElement(val, part)
+	case reflect.Float32, reflect.Float64:
+		return setFloatElement(val, part)
+	case reflect.Bool:
+		return setBoolElement(val, part)
+	default:
+		return fmt.Errorf("unsupported slice element type: %s", kind)
+	}
+}
+
+// 设置整数类型元素
+func setIntElement(val reflect.Value, part string) error {
+	n, err := parseInt(part)
+	if err != nil {
+		return err
+	}
+	val.SetInt(n)
+	return nil
+}
+
+// 设置无符号整数类型元素
+func setUintElement(val reflect.Value, part string) error {
+	n, err := parseUint(part)
+	if err != nil {
+		return err
+	}
+	val.SetUint(n)
+	return nil
+}
+
+// 设置浮点数类型元素
+func setFloatElement(val reflect.Value, part string) error {
+	n, err := parseFloat(part)
+	if err != nil {
+		return err
+	}
+	val.SetFloat(n)
+	return nil
+}
+
+// 设置布尔类型元素
+func setBoolElement(val reflect.Value, part string) error {
+	b, err := parseBool(part)
+	if err != nil {
+		return err
+	}
+	val.SetBool(b)
+	return nil
 }
 
 func setDefaultValues(obj interface{}) error {

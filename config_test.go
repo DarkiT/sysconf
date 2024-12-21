@@ -115,22 +115,6 @@ server:
 		}
 	})
 
-	// 测试环境变量
-	t.Run("环境变量", func(t *testing.T) {
-		os.Setenv("APP_DATABASE_HOST", "envhost.example.com")
-
-		// 重新初始化以加载环境变量
-		if err := cfg.SetEnvOptions(EnvOptions{Prefix: "APP", Enabled: true}); err != nil {
-			t.Errorf("设置环境变量选项失败: %v", err)
-		}
-
-		if host := cfg.GetString("database.host"); host != "envhost.example.com" {
-			t.Errorf("环境变量未生效, 期望 envhost.example.com, 获得 %s", host)
-		}
-
-		os.Unsetenv("APP_DATABASE_HOST")
-	})
-
 	// 测试配置监听
 	t.Run("配置监听", func(t *testing.T) {
 		changed := make(chan bool)
@@ -151,6 +135,23 @@ server:
 			t.Error("未收到配置变更通知")
 		}
 	})
+
+	// 测试环境变量
+	t.Run("环境变量", func(t *testing.T) {
+		os.Setenv("APP_DATABASE_HOST", "envhost.example.com")
+
+		// 重新初始化以加载环境变量
+		if err := cfg.SetEnvOptions(EnvOptions{Prefix: "APP", Enabled: true}); err != nil {
+			t.Errorf("设置环境变量选项失败: %v", err)
+		}
+
+		if host := cfg.GetString("database.host"); host != "envhost.example.com" {
+			t.Errorf("环境变量未生效, 期望 envhost.example.com, 获得 %s", host)
+		}
+
+		os.Unsetenv("APP_DATABASE_HOST")
+	})
+
 }
 
 // 测试全局配置实例
