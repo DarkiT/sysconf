@@ -387,14 +387,14 @@ func (c *Config) Set(key string, value interface{}) error {
 	return nil
 }
 
-// SetEnvOptions 更新环境变量选项
-func (c *Config) SetEnvOptions(opts EnvOptions) error {
+// SetEnvPrefix 更新环境变量选项
+func (c *Config) SetEnvPrefix(prefix string) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.envOptions = opts
-
-	return c.initializeEnv()
+	c.envOptions.Prefix = prefix
+	c.envOptions.Enabled = prefix != "" // 如果有前缀就启用环境变量
+	err := c.initializeEnv()
+	c.mu.Unlock()
+	return err
 }
 
 // Unmarshal 将配置解析到结构体
