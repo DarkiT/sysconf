@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -83,6 +82,7 @@ func New(opts ...Option) (*Config, error) {
 		viper: viper.New(),
 		path:  WorkPath("."),
 		mode:  "yaml",
+		name:  "",
 	}
 
 	// 应用自定义选项
@@ -504,6 +504,7 @@ func (c *Config) Watch(callbacks ...func()) {
 }
 
 // Viper 返回底层的 viper 实例
+// 注意：直接操作 viper 实例时需要自行处理并发安全
 func (c *Config) Viper() *viper.Viper {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -1064,8 +1065,61 @@ func toFloat64(v interface{}) (float64, error) {
 	}
 }
 
-// sanitizeEnvPrefix 清理环境变量前缀
+// sanitizeEnvPrefix 清理环境变量前缀，转换为符合 POSIX 标准的环境变量格式
+// 规则：
+// 1. 只允许大写字母、数字和下划线
+// 2. 必须以字母开头
+// 3. 自动转换为大写
+// 4. 特殊字符转换为下划线
 func sanitizeEnvPrefix(prefix string) string {
-	reg := regexp.MustCompile(`[^A-Z0-9_]+`)
-	return reg.ReplaceAllString(strings.ToUpper(prefix), "_")
+	if prefix == "" {
+		return ""
+	}
+
+	var b strings.Builder
+	var lastValid bool
+
+	// 跳过开头的非字母字符，确保以字母开头
+	for i := 0; i < len(prefix) && !isLetter(prefix[i]); i++ {
+		prefix = prefix[1:]
+	}
+
+	// 如果没有字母开头，返回空字符串
+	if prefix == "" || !isLetter(prefix[0]) {
+		return ""
+	}
+
+	// 处理剩余字符，保证只包含合法字符
+	for i := 0; i < len(prefix); i++ {
+		c := prefix[i]
+		if isAlphanumeric(c) {
+			if !lastValid && b.Len() > 0 {
+				b.WriteByte('_')
+			}
+			b.WriteByte(toUpper(c))
+			lastValid = true
+		} else {
+			lastValid = false
+		}
+	}
+
+	return b.String()
+}
+
+// isLetter 判断字符是否为字母
+func isLetter(c byte) bool {
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+}
+
+// isAlphanumeric 判断字符是否为字母或数字
+func isAlphanumeric(c byte) bool {
+	return isLetter(c) || (c >= '0' && c <= '9')
+}
+
+// toUpper 将字符转换为大写
+func toUpper(c byte) byte {
+	if c >= 'a' && c <= 'z' {
+		return c - 32
+	}
+	return c
 }
