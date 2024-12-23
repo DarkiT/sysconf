@@ -217,17 +217,27 @@ type Config struct {
 2. 通过配置文件设置：
 ```yaml
 server:
-  # 数组形式
+  # 数组形式（推荐写法）
   features:
     - http
     - grpc
   ports:
     - 80
     - 443
-  
-  # 字符串形式（对于切片类型）
-  weights: "0.1,0.2,0.7"
-  flags: "true,false,true"
+  weights:
+    - 0.1
+    - 0.2
+    - 0.7
+  flags:
+    - true
+    - false
+    - true
+
+  # 也支持内联数组形式
+  features: [http, grpc]
+  ports: [80, 443]
+  weights: [0.1, 0.2, 0.7]
+  flags: [true, false, true]
   
   # 其他复杂类型
   timeout: 30s
