@@ -167,15 +167,15 @@ if err != nil {
 ```go
 // 点号方式
 host := cfg.GetString("database.host", "localhost")    // 返回 localhost（如果值不存在）
-port := cfg.GetInt("database.port", 5432)             // 返回 5432（如果值不存在）
-debug := cfg.GetBool("server.debug", true)            // 返回 true（如果值不存在）
-value := cfg.GetFloat("metrics.value", 0.95)          // 返回 0.95（如果值不存在）
+port := cfg.GetInt("database.port", "5432")             // 返回 5432（如果值不存在）
+debug := cfg.GetBool("server.debug", "true")            // 返回 true（如果值不存在）
+value := cfg.GetFloat("metrics.value", "0.95")          // 返回 0.95（如果值不存在）
 
 // 多参数方式
 host := cfg.GetString("database", "host", "localhost") // 等同于上面的点号方式
-port := cfg.GetInt("database", "port", 5432)
-debug := cfg.GetBool("server", "debug", true)
-value := cfg.GetFloat("metrics", "value", 0.95)
+port := cfg.GetInt("database", "port", "5432")
+debug := cfg.GetBool("server", "debug", "true")
+value := cfg.GetFloat("metrics", "value", "0.95")
 ```
 
 如果不提供默认值，则在配置项不存在时返回对应类型的零值：

@@ -141,9 +141,7 @@ server:
 		os.Setenv("APP_DATABASE_HOST", "envhost.example.com")
 
 		// 重新初始化以加载环境变量
-		if err := cfg.SetEnvOptions(EnvOptions{Prefix: "APP", Enabled: true}); err != nil {
-			t.Errorf("设置环境变量选项失败: %v", err)
-		}
+		cfg.SetEnvPrefix("APP")
 
 		if host := cfg.GetString("database.host"); host != "envhost.example.com" {
 			t.Errorf("环境变量未生效, 期望 envhost.example.com, 获得 %s", host)

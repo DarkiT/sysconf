@@ -14,18 +14,21 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	mapstructure "github.com/go-viper/mapstructure/v2"
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
 )
 
-var ErrInvalidKey = errors.New("invalid configuration key")
+const (
+	ExitConfigError = 78 // EX_CONFIG in sysexits.h
+)
 
-// 全局配置单例
 var (
 	workPathOnce  sync.Once
 	workPathValue string
 	globalOnce    sync.Once
 	globalConfig  *Config
+
+	ErrInvalidKey = errors.New("invalid configuration key")
 )
 
 // EnvOptions 环境变量配置选项
@@ -37,16 +40,16 @@ type EnvOptions struct {
 // Config 配置结构体
 type Config struct {
 	viper         *viper.Viper
-	path          string
-	mode          string
-	name          string
-	content       string
-	envOptions    EnvOptions
-	mu            sync.RWMutex
-	lastUpdate    time.Time
-	writeTimer    *time.Timer // 延迟写入定时器
-	pendingWrites bool        // 是否有待写入的更改
-	writeMu       sync.Mutex  // 写入操作的互斥锁
+	path          string       // 配置文件路径
+	mode          string       // 配置文件类型
+	name          string       // 配置文件名称
+	content       string       // 默认配置文件内容
+	envOptions    EnvOptions   // 环境变量配置选项
+	lastUpdate    time.Time    // 配置最后更新时间
+	writeTimer    *time.Timer  // 延迟写入定时器
+	pendingWrites bool         // 是否有待写入的更改
+	mu            sync.RWMutex // 读取操作的锁
+	writeMu       sync.Mutex   // 写入操作的互斥锁
 }
 
 // Option 配置选项
@@ -73,45 +76,50 @@ func WorkPath(parts ...string) string {
 	return filepath.Join(append([]string{workPathValue}, parts...)...)
 }
 
-// Default 获取全局配置实例
-func Default() *Config {
-	globalOnce.Do(func() {
-		var err error
-		globalConfig, err = New()
-		if err != nil {
-			panic(fmt.Sprintf("initialize global config: %v", err))
-		}
-	})
-	return globalConfig
-}
-
-// Register 注册全局配置
-func Register(module, key string, value interface{}) error {
-	if module == "" || key == "" {
-		return fmt.Errorf("register module or key is empty")
-	}
-	return Default().Set(module+"."+key, value)
-}
-
 // New 创建新的配置实例
 func New(opts ...Option) (*Config, error) {
+	// 创建默认配置
 	c := &Config{
 		viper: viper.New(),
 		path:  WorkPath("."),
-		mode:  "env",
-		name:  "",
+		mode:  "yaml",
 	}
 
-	// 应用选项
+	// 应用自定义选项
 	for _, opt := range opts {
 		opt(c)
 	}
 
+	// 初始化配置
 	if err := c.initialize(); err != nil {
 		return nil, fmt.Errorf("initialize config: %w", err)
 	}
 
 	return c, nil
+}
+
+// Default 获取全局单例配置实例
+func Default(opts ...Option) *Config {
+	globalOnce.Do(func() {
+		config, err := New(opts...)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Fatal error initializing global config: %v", err)
+			os.Exit(ExitConfigError)
+		}
+		globalConfig = config
+	})
+	return globalConfig
+}
+
+// Register 注册配置项到全局配置
+func Register(module, key string, value interface{}) error {
+	// 参数验证
+	if module == "" || key == "" {
+		return fmt.Errorf("register module or key is empty")
+	}
+
+	// 获取全局配置并设置值
+	return Default().Set(module+"."+key, value)
 }
 
 // WithPath 设置配置文件路径
@@ -352,7 +360,11 @@ func (c *Config) Set(key string, value interface{}) error {
 	c.viper.Set(key, value)
 	c.mu.Unlock()
 
-	// 使用独立的互斥锁处理写入操作
+	// 如果配置文件名称不存在则不保存文件
+	if c.name == "" {
+		return nil
+	}
+	// 用独立的互斥锁处理写入操作
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 
@@ -492,7 +504,6 @@ func (c *Config) Watch(callbacks ...func()) {
 }
 
 // Viper 返回底层的 viper 实例
-// 注意：直接操作 viper 实例时需要自行处理并发安全
 func (c *Config) Viper() *viper.Viper {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

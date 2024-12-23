@@ -100,10 +100,7 @@ func NewApp() (*App, error) {
 	}
 
 	// 或者后续更新环境变量选项
-	_ = cfg.SetEnvOptions(sysconf.EnvOptions{
-		Prefix:  "APP",
-		Enabled: true,
-	})
+	_ = cfg.SetEnvPrefix("APP")
 
 	app := &App{
 		cfg: cfg,
