@@ -293,21 +293,53 @@ func (c *Config) GetString(parts ...string) string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	val := c.viper.GetString(key)
-	if val == "" {
+	if !c.viper.IsSet(key) {
 		return defaultVal
 	}
-	return val
-}
 
-// GetStringMap 获取字符串映射配置
-func (c *Config) GetStringMap(key ...string) map[string]interface{} {
-	return c.viper.GetStringMap(strings.Join(key, "."))
+	return c.viper.GetString(key)
 }
 
 // GetStringSlice 获取字符串切片配置
-func (c *Config) GetStringSlice(key ...string) []string {
-	return c.viper.GetStringSlice(strings.Join(key, "."))
+func (c *Config) GetStringSlice(key string) []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.viper.GetStringSlice(key)
+}
+
+// GetIntSlice 获取整数切片配置
+func (c *Config) GetIntSlice(key string) []int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.viper.GetIntSlice(key)
+}
+
+// GetStringMap 获取字符串映射配置
+func (c *Config) GetStringMap(key string) map[string]interface{} {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.viper.GetStringMap(key)
+}
+
+// GetStringMapString 获取字符串-字符串映射配置
+func (c *Config) GetStringMapString(key string) map[string]string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.viper.GetStringMapString(key)
+}
+
+// GetTime 获取时间配置
+func (c *Config) GetTime(key string) time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.viper.GetTime(key)
+}
+
+// GetDuration 获取时间间隔配置
+func (c *Config) GetDuration(key string) time.Duration {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.viper.GetDuration(key)
 }
 
 // Set 设置配置值
@@ -457,6 +489,14 @@ func (c *Config) Watch(callbacks ...func()) {
 	})
 
 	c.viper.WatchConfig()
+}
+
+// Viper 返回底层的 viper 实例
+// 注意：直接操作 viper 实例时需要自行处理并发安全
+func (c *Config) Viper() *viper.Viper {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.viper
 }
 
 func (c *Config) createDefaultConfig() error {

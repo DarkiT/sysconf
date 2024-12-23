@@ -151,7 +151,6 @@ server:
 
 		os.Unsetenv("APP_DATABASE_HOST")
 	})
-
 }
 
 // 测试全局配置实例
