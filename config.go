@@ -82,7 +82,6 @@ func New(opts ...Option) (*Config, error) {
 		viper: viper.New(),
 		path:  WorkPath("."),
 		mode:  "yaml",
-		name:  "",
 	}
 
 	// 应用自定义选项
@@ -504,7 +503,6 @@ func (c *Config) Watch(callbacks ...func()) {
 }
 
 // Viper 返回底层的 viper 实例
-// 注意：直接操作 viper 实例时需要自行处理并发安全
 func (c *Config) Viper() *viper.Viper {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
