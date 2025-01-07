@@ -54,25 +54,60 @@ type Config struct {
 // Option 配置选项
 type Option func(*Config)
 
-// WorkPath 获取工作目录，出错时返回当前目录
+// WorkPath 获取工作目录，如果不可写则使用用户主目录
 func WorkPath(parts ...string) string {
 	workPathOnce.Do(func() {
-		exe, err := os.Executable()
-		if err != nil {
-			workPathValue = "."
-			return
+		// 1. 首先尝试可执行文件目录
+		if exe, err := os.Executable(); err == nil {
+			if dir, err := filepath.EvalSymlinks(filepath.Dir(exe)); err == nil {
+				// 检查目录是否存在且可访问
+				if info, err := os.Stat(dir); err == nil && info.IsDir() {
+					// 检查目录是否可写
+					testFile := filepath.Join(dir, ".write_test")
+					if err := os.WriteFile(testFile, []byte("test"), 0o666); err == nil {
+						_ = os.Remove(testFile)
+						workPathValue = dir
+						return
+					}
+				}
+			}
 		}
 
-		dir, err := filepath.EvalSymlinks(filepath.Dir(exe))
-		if err != nil {
-			workPathValue = "."
-			return
+		// 2. 然后尝试用户主目录
+		if homeDir, err := os.UserHomeDir(); err == nil {
+			appDir := filepath.Join(homeDir, ".config")
+			if err := os.MkdirAll(appDir, 0o755); err == nil {
+				workPathValue = appDir
+				return
+			}
 		}
 
-		workPathValue = dir
+		// 3. 最后使用当前目录
+		workPathValue = "."
 	})
 
-	return filepath.Join(append([]string{workPathValue}, parts...)...)
+	// 过滤和验证路径部分
+	validParts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part != "" {
+			validParts = append(validParts, part)
+		}
+	}
+
+	// 如果组合后的路径是绝对路径，直接返回
+	if filepath.IsAbs(filepath.Join(validParts...)) {
+		return filepath.Join(validParts...)
+	}
+
+	// 构建最终路径
+	fullPath := filepath.Join(append([]string{workPathValue}, validParts...)...)
+
+	// 对相对路径进行安全性检查
+	if !strings.HasPrefix(filepath.Clean(fullPath), filepath.Clean(workPathValue)) {
+		return workPathValue
+	}
+
+	return fullPath
 }
 
 // New 创建新的配置实例
@@ -80,7 +115,7 @@ func New(opts ...Option) (*Config, error) {
 	// 创建默认配置
 	c := &Config{
 		viper: viper.New(),
-		path:  WorkPath("."),
+		path:  WorkPath(),
 		mode:  "yaml",
 	}
 
