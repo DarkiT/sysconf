@@ -303,9 +303,18 @@ if err := cfg.Unmarshal(&dbConfig, "database"); err != nil {
 }
 ```
 
-### 结构体标签
+### 结构体标签说明
 
-- `config:"key"`: 指定配置键名。
+- `config:"key"`: 指定配置键名（支持多标签格式：`config`,`yaml`,`toml`,`json`,`env`,`ini`）。
+  - 按照优先级顺序依次查找：config > yaml > toml > json > env > ini
+  - 使用找到的第一个有效标签值作为配置键名
+  - 示例：
+    ```go
+    type Config struct {
+        Host string `config:"host" yaml:"hostname" toml:"host_name"`
+        // 将优先使用 config 标签的值，如果没有则尝试 yaml 标签，以此类推
+    }
+    ```
 - `default:"value"`: 设置默认值。
 - `required:"true"`: 标记必填字段。
 

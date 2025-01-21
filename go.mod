@@ -29,4 +29,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/mitchellh/mapstructure => github.com/go-viper/mapstructure v1.6.0
+replace (
+	github.com/go-viper/mapstructure/v2 => github.com/darkit/mapstructure/v2 v2.2.2
+	github.com/mitchellh/mapstructure => github.com/go-viper/mapstructure v1.6.0
+)

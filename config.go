@@ -469,7 +469,7 @@ func (c *Config) Unmarshal(obj interface{}, key ...string) error {
 		),
 		Result:           obj,
 		WeaklyTypedInput: true,
-		TagName:          "config",
+		TagName:          "config,yaml,toml,json,env,ini",
 		ZeroFields:       false,
 	}
 
