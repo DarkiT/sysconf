@@ -14,11 +14,8 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/go-viper/mapstructure/v2"
+	"github.com/spf13/cast"
 	"github.com/spf13/viper"
-)
-
-const (
-	ExitConfigError = 78 // EX_CONFIG in sysexits.h
 )
 
 var (
@@ -27,7 +24,8 @@ var (
 	globalOnce    sync.Once
 	globalConfig  *Config
 
-	ErrInvalidKey = errors.New("invalid configuration key")
+	ErrInvalidKey       = errors.New("invalid configuration key")
+	ErrInitGlobalConfig = errors.New("failed to initialize global config")
 )
 
 // EnvOptions 环境变量配置选项
@@ -135,18 +133,17 @@ func New(opts ...Option) (*Config, error) {
 // Default 获取全局单例配置实例
 func Default(opts ...Option) *Config {
 	globalOnce.Do(func() {
-		config, err := New(opts...)
+		var err error
+		globalConfig, err = New(opts...)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Fatal error initializing global config: %v", err)
-			os.Exit(ExitConfigError)
+			panic(fmt.Errorf("%w: %v", ErrInitGlobalConfig, err))
 		}
-		globalConfig = config
 	})
 	return globalConfig
 }
 
 // Register 注册配置项到全局配置
-func Register(module, key string, value interface{}) error {
+func Register(module, key string, value any) error {
 	// 参数验证
 	if module == "" || key == "" {
 		return fmt.Errorf("register module or key is empty")
@@ -192,7 +189,7 @@ func WithContent(content string) Option {
 }
 
 // Get 获取配置值
-func (c *Config) Get(key string, def ...interface{}) interface{} {
+func (c *Config) Get(key string, def ...any) any {
 	if key == "" {
 		if len(def) > 0 {
 			return def[0]
@@ -357,7 +354,7 @@ func (c *Config) GetIntSlice(key string) []int {
 }
 
 // GetStringMap 获取字符串映射配置
-func (c *Config) GetStringMap(key string) map[string]interface{} {
+func (c *Config) GetStringMap(key string) map[string]any {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.viper.GetStringMap(key)
@@ -385,7 +382,7 @@ func (c *Config) GetDuration(key string) time.Duration {
 }
 
 // Set 设置配置值
-func (c *Config) Set(key string, value interface{}) error {
+func (c *Config) Set(key string, value any) error {
 	if key == "" {
 		return ErrInvalidKey
 	}
@@ -447,13 +444,12 @@ func (c *Config) SetEnvPrefix(prefix string) error {
 // key 为空时解析整个配置，否则解析指定的配置段
 // 支持 default 标签设置默认值
 // 支持 required 标签验证必填字段
-func (c *Config) Unmarshal(obj interface{}, key ...string) error {
+func (c *Config) Unmarshal(obj any, key ...string) error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	// 如果是结构体指针，则设置默认值
-	if reflect.TypeOf(obj).Kind() == reflect.Ptr &&
-		reflect.TypeOf(obj).Elem().Kind() == reflect.Struct {
+	if reflect.TypeOf(obj).Kind() == reflect.Ptr && reflect.TypeOf(obj).Elem().Kind() == reflect.Struct {
 		if err := setDefaultValues(obj); err != nil {
 			return fmt.Errorf("set defaults: %w", err)
 		}
@@ -469,7 +465,7 @@ func (c *Config) Unmarshal(obj interface{}, key ...string) error {
 		),
 		Result:           obj,
 		WeaklyTypedInput: true,
-		TagName:          "config,yaml,toml,json,env,ini",
+		TagName:          strings.Join([]string{"config", strings.Join(viper.SupportedExts, ", ")}, ","),
 		ZeroFields:       false,
 	}
 
@@ -479,7 +475,7 @@ func (c *Config) Unmarshal(obj interface{}, key ...string) error {
 	}
 
 	// 获取配置数据
-	var data map[string]interface{}
+	var data map[string]any
 	if len(key) > 0 && key[0] != "" {
 		configKey := strings.Join(key, ".")
 		sub := c.viper.Sub(configKey)
@@ -501,8 +497,7 @@ func (c *Config) Unmarshal(obj interface{}, key ...string) error {
 	}
 
 	// 如果是结构体指针，则验证必填字段
-	if reflect.TypeOf(obj).Kind() == reflect.Ptr &&
-		reflect.TypeOf(obj).Elem().Kind() == reflect.Struct {
+	if reflect.TypeOf(obj).Kind() == reflect.Ptr && reflect.TypeOf(obj).Elem().Kind() == reflect.Struct {
 		if err := validateStruct(obj); err != nil {
 			return fmt.Errorf("validate: %w", err)
 		}
@@ -613,7 +608,7 @@ func (c *Config) initializeEnv() error {
 	}
 
 	if c.envOptions.Prefix != "" {
-		prefix := strings.ToUpper(sanitizeEnvPrefix(c.envOptions.Prefix))
+		prefix := strings.ToUpper(c.envOptions.Prefix)
 		c.viper.SetEnvPrefix(prefix)
 	}
 
@@ -648,64 +643,86 @@ func (c *Config) validateMode() error {
 		return nil
 	}
 
-	supportedModes := map[string]bool{
-		"yaml":       true,
-		"yml":        true,
-		"json":       true,
-		"toml":       true,
-		"ini":        true,
-		"env":        true,
-		"properties": true,
+	// 检查是否是支持的格式
+	for _, ext := range viper.SupportedExts {
+		if c.mode == ext {
+			return nil
+		}
 	}
 
-	if !supportedModes[c.mode] {
-		return fmt.Errorf("unsupported config mode: %s", c.mode)
-	}
-
-	return nil
+	// 如果不支持，返回错误
+	return fmt.Errorf("unsupported config mode: %s (supported: %s)", c.mode, strings.Join(viper.SupportedExts, ", "))
 }
 
+// validatePath 验证并规范化配置文件路径
 func (c *Config) validatePath() error {
+	// 处理空路径情况
 	if c.path == "" {
 		c.path = "."
 		return nil
 	}
 
-	if strings.ContainsAny(c.path, "\x00") {
-		return fmt.Errorf("path contains illegal characters")
-	}
+	// 使用 Clean 清理路径，去除 .. 和多余的分隔符
+	cleanPath := filepath.Clean(c.path)
 
-	absPath, err := filepath.Abs(c.path)
+	// 获取绝对路径
+	absPath, err := filepath.Abs(cleanPath)
 	if err != nil {
 		return fmt.Errorf("invalid path: %w", err)
 	}
-	c.path = absPath
 
+	// 规范化路径（处理符号链接）
+	realPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("evaluate symlinks: %w", err)
+	}
+
+	// 如果路径不存在，使用 absPath
+	if os.IsNotExist(err) {
+		c.path = absPath
+	} else {
+		c.path = realPath
+	}
+
+	// 检查目录权限和可写性
+	if err := c.ensureDirectoryAccess(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// ensureDirectoryAccess 确保目录存在且可写
+func (c *Config) ensureDirectoryAccess() error {
+	// 检查目录状态
 	info, err := os.Stat(c.path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			if err := os.MkdirAll(c.path, 0o755); err != nil {
-				return fmt.Errorf("create directory failed: %w", err)
-			}
-			return nil
+	if err == nil {
+		// 目录存在，检查是否为目录
+		if !info.IsDir() {
+			return fmt.Errorf("path is not a directory: %s", c.path)
 		}
-		if os.IsPermission(err) {
-			return fmt.Errorf("permission denied: %w", err)
+	} else if os.IsNotExist(err) {
+		// 目录不存在，尝试创建
+		if err := os.MkdirAll(c.path, 0o755); err != nil {
+			return fmt.Errorf("create directory failed: %w", err)
 		}
+		return nil
+	} else if os.IsPermission(err) {
+		return fmt.Errorf("permission denied: %w", err)
+	} else {
 		return fmt.Errorf("check path failed: %w", err)
 	}
 
-	if !info.IsDir() {
-		return fmt.Errorf("path is not a directory: %s", c.path)
-	}
-
-	testFile := filepath.Join(c.path, ".test")
-	f, err := os.OpenFile(testFile, os.O_CREATE|os.O_WRONLY, 0o644)
+	// 使用临时文件测试目录可写性
+	tempFile, err := os.CreateTemp(c.path, ".config_write_test")
 	if err != nil {
 		return fmt.Errorf("directory not writable: %w", err)
 	}
-	f.Close()
-	os.Remove(testFile)
+
+	// 清理临时文件
+	tempName := tempFile.Name()
+	_ = tempFile.Close()
+	_ = os.Remove(tempName)
 
 	return nil
 }
@@ -729,29 +746,6 @@ func isZero(v reflect.Value) bool {
 	return false
 }
 
-func parseBool(s string) (bool, error) {
-	switch strings.ToLower(s) {
-	case "1", "t", "true", "yes", "y", "on":
-		return true, nil
-	case "0", "f", "false", "no", "n", "off":
-		return false, nil
-	default:
-		return false, fmt.Errorf("invalid boolean value: %s", s)
-	}
-}
-
-func parseInt(s string) (int64, error) {
-	return strconv.ParseInt(s, 10, 64)
-}
-
-func parseUint(s string) (uint64, error) {
-	return strconv.ParseUint(s, 10, 64)
-}
-
-func parseFloat(s string) (float64, error) {
-	return strconv.ParseFloat(s, 64)
-}
-
 func parseSlice(s string, t reflect.Type) (reflect.Value, error) {
 	// 处理空字符串情况
 	if s == "" {
@@ -760,18 +754,13 @@ func parseSlice(s string, t reflect.Type) (reflect.Value, error) {
 
 	// 尝试解析 JSON 数组
 	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
-		var slice []interface{}
+		var slice []any
 		if err := json.Unmarshal([]byte(s), &slice); err == nil {
 			return convertJSONArrayToSlice(slice, t)
 		}
 	}
 
 	// 处理逗号分隔的字符串
-	return parseCommaDelimitedSlice(s, t)
-}
-
-// 处理逗号分隔的字符串
-func parseCommaDelimitedSlice(s string, t reflect.Type) (reflect.Value, error) {
 	parts := strings.Split(s, ",")
 	slice := reflect.MakeSlice(t, len(parts), len(parts))
 
@@ -779,7 +768,39 @@ func parseCommaDelimitedSlice(s string, t reflect.Type) (reflect.Value, error) {
 		part = strings.TrimSpace(part)
 		val := reflect.New(t.Elem()).Elem()
 
-		if err := setSliceElement(val, part, t.Elem().Kind()); err != nil {
+		var err error
+		switch t.Elem().Kind() {
+		case reflect.String:
+			val.SetString(part)
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			var n int64
+			n, err = cast.ToInt64E(part)
+			if err == nil {
+				val.SetInt(n)
+			}
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			var n uint64
+			n, err = cast.ToUint64E(part)
+			if err == nil {
+				val.SetUint(n)
+			}
+		case reflect.Float32, reflect.Float64:
+			var n float64
+			n, err = cast.ToFloat64E(part)
+			if err == nil {
+				val.SetFloat(n)
+			}
+		case reflect.Bool:
+			var b bool
+			b, err = cast.ToBoolE(part)
+			if err == nil {
+				val.SetBool(b)
+			}
+		default:
+			return reflect.Value{}, fmt.Errorf("unsupported slice element type: %s", t.Elem().Kind())
+		}
+
+		if err != nil {
 			return reflect.Value{}, fmt.Errorf("parse slice element %d: %w", i, err)
 		}
 		slice.Index(i).Set(val)
@@ -788,66 +809,96 @@ func parseCommaDelimitedSlice(s string, t reflect.Type) (reflect.Value, error) {
 	return slice, nil
 }
 
-// 设置切片元素的值
-func setSliceElement(val reflect.Value, part string, kind reflect.Kind) error {
-	switch kind {
-	case reflect.String:
-		val.SetString(part)
-		return nil
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return setIntElement(val, part)
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return setUintElement(val, part)
-	case reflect.Float32, reflect.Float64:
-		return setFloatElement(val, part)
-	case reflect.Bool:
-		return setBoolElement(val, part)
-	default:
-		return fmt.Errorf("unsupported slice element type: %s", kind)
+func stringToSliceHookFunc() mapstructure.DecodeHookFunc {
+	return func(f reflect.Type, t reflect.Type, data any) (any, error) {
+		if f.Kind() != reflect.String || t.Kind() != reflect.Slice {
+			return data, nil
+		}
+
+		str := data.(string)
+		if str == "" {
+			return []string{}, nil
+		}
+
+		// 尝试解析 JSON
+		var slice []any
+		if err := json.Unmarshal([]byte(str), &slice); err == nil {
+			return slice, nil
+		}
+
+		// 降级为逗号分隔
+		return strings.Split(str, ","), nil
 	}
 }
 
-// 设置整数类型元素
-func setIntElement(val reflect.Value, part string) error {
-	n, err := parseInt(part)
-	if err != nil {
-		return err
+func stringToMapHookFunc() mapstructure.DecodeHookFunc {
+	return func(f reflect.Type, t reflect.Type, data any) (any, error) {
+		if f.Kind() != reflect.String || t.Kind() != reflect.Map {
+			return data, nil
+		}
+
+		var m map[string]any
+
+		str := data.(string)
+		if str == "" {
+			return m, nil
+		}
+
+		if err := json.Unmarshal([]byte(str), &m); err != nil {
+			return nil, fmt.Errorf("invalid map format: %s", str)
+		}
+		return m, nil
 	}
-	val.SetInt(n)
-	return nil
 }
 
-// 设置无符号整数类型元素
-func setUintElement(val reflect.Value, part string) error {
-	n, err := parseUint(part)
-	if err != nil {
-		return err
+func convertJSONArrayToSlice(arr []any, t reflect.Type) (reflect.Value, error) {
+	slice := reflect.MakeSlice(t, len(arr), len(arr))
+
+	for i, item := range arr {
+		val := reflect.New(t.Elem()).Elem()
+
+		switch t.Elem().Kind() {
+		case reflect.String:
+			s, err := cast.ToStringE(item)
+			if err != nil {
+				return reflect.Value{}, fmt.Errorf("element %d: %w", i, err)
+			}
+			val.SetString(s)
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			n, err := cast.ToInt64E(item)
+			if err != nil {
+				return reflect.Value{}, fmt.Errorf("element %d: %w", i, err)
+			}
+			val.SetInt(n)
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			n, err := cast.ToUint64E(item)
+			if err != nil {
+				return reflect.Value{}, fmt.Errorf("element %d: %w", i, err)
+			}
+			val.SetUint(n)
+		case reflect.Float32, reflect.Float64:
+			n, err := cast.ToFloat64E(item)
+			if err != nil {
+				return reflect.Value{}, fmt.Errorf("element %d: %w", i, err)
+			}
+			val.SetFloat(n)
+		case reflect.Bool:
+			b, err := cast.ToBoolE(item)
+			if err != nil {
+				return reflect.Value{}, fmt.Errorf("element %d: %w", i, err)
+			}
+			val.SetBool(b)
+		default:
+			return reflect.Value{}, fmt.Errorf("unsupported slice element type: %s", t.Elem().Kind())
+		}
+
+		slice.Index(i).Set(val)
 	}
-	val.SetUint(n)
-	return nil
+
+	return slice, nil
 }
 
-// 设置浮点数类型元素
-func setFloatElement(val reflect.Value, part string) error {
-	n, err := parseFloat(part)
-	if err != nil {
-		return err
-	}
-	val.SetFloat(n)
-	return nil
-}
-
-// 设置布尔类型元素
-func setBoolElement(val reflect.Value, part string) error {
-	b, err := parseBool(part)
-	if err != nil {
-		return err
-	}
-	val.SetBool(b)
-	return nil
-}
-
-func setDefaultValues(obj interface{}) error {
+func setDefaultValues(obj any) error {
 	if obj == nil {
 		return errors.New("nil pointer")
 	}
@@ -898,25 +949,29 @@ func setFieldValue(field reflect.Value, value string) error {
 	case reflect.String:
 		field.SetString(value)
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		if v, err := strconv.ParseInt(value, 10, 64); err == nil {
-			field.SetInt(v)
-		} else if d, err := time.ParseDuration(value); err == nil {
+		// 先尝试解析为 duration
+		if d, err := time.ParseDuration(value); err == nil {
 			field.SetInt(int64(d))
-		} else {
-			return fmt.Errorf("invalid int value: %s", value)
+			return nil
 		}
+		// 再尝试解析为数字
+		if v, err := cast.ToInt64E(value); err == nil {
+			field.SetInt(v)
+			return nil
+		}
+		return fmt.Errorf("invalid int value: %s", value)
 	case reflect.Float32, reflect.Float64:
-		if v, err := strconv.ParseFloat(value, 64); err == nil {
-			field.SetFloat(v)
-		} else {
+		v, err := cast.ToFloat64E(value)
+		if err != nil {
 			return fmt.Errorf("invalid float value: %s", value)
 		}
+		field.SetFloat(v)
 	case reflect.Bool:
-		if v, err := parseBool(value); err == nil {
-			field.SetBool(v)
-		} else {
+		v, err := cast.ToBoolE(value)
+		if err != nil {
 			return fmt.Errorf("invalid bool value: %s", value)
 		}
+		field.SetBool(v)
 	case reflect.Slice:
 		v, err := parseSlice(value, field.Type())
 		if err != nil {
@@ -929,7 +984,7 @@ func setFieldValue(field reflect.Value, value string) error {
 	return nil
 }
 
-func validateStruct(obj interface{}) error {
+func validateStruct(obj any) error {
 	v := reflect.ValueOf(obj)
 	if v.Kind() == reflect.Ptr {
 		v = v.Elem()
@@ -947,212 +1002,4 @@ func validateStruct(obj interface{}) error {
 	}
 
 	return nil
-}
-
-func stringToSliceHookFunc() mapstructure.DecodeHookFunc {
-	return func(f reflect.Type, t reflect.Type, data interface{}) (interface{}, error) {
-		if f.Kind() != reflect.String {
-			return data, nil
-		}
-		if t.Kind() != reflect.Slice {
-			return data, nil
-		}
-
-		str := data.(string)
-		if str == "" {
-			return []string{}, nil
-		}
-
-		// 尝试解析JSON数组
-		var slice []interface{}
-		if err := json.Unmarshal([]byte(str), &slice); err == nil {
-			return slice, nil
-		}
-
-		// 降级为以逗号分隔的字符串
-		return strings.Split(str, ","), nil
-	}
-}
-
-func stringToMapHookFunc() mapstructure.DecodeHookFunc {
-	return func(f reflect.Type, t reflect.Type, data interface{}) (interface{}, error) {
-		if f.Kind() != reflect.String {
-			return data, nil
-		}
-		if t.Kind() != reflect.Map {
-			return data, nil
-		}
-
-		str := data.(string)
-		if str == "" {
-			return map[string]interface{}{}, nil
-		}
-
-		// 尝试解析JSON对象
-		var m map[string]interface{}
-		if err := json.Unmarshal([]byte(str), &m); err != nil {
-			return nil, fmt.Errorf("invalid map format: %s", str)
-		}
-		return m, nil
-	}
-}
-
-func convertJSONArrayToSlice(arr []interface{}, t reflect.Type) (reflect.Value, error) {
-	slice := reflect.MakeSlice(t, len(arr), len(arr))
-
-	for i, item := range arr {
-		val := reflect.New(t.Elem()).Elem()
-
-		switch t.Elem().Kind() {
-		case reflect.String:
-			s, ok := item.(string)
-			if !ok {
-				return reflect.Value{}, fmt.Errorf("element %d is not a string", i)
-			}
-			val.SetString(s)
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			n, err := toInt64(item)
-			if err != nil {
-				return reflect.Value{}, fmt.Errorf("element %d: %w", i, err)
-			}
-			val.SetInt(n)
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			n, err := toUint64(item)
-			if err != nil {
-				return reflect.Value{}, fmt.Errorf("element %d: %w", i, err)
-			}
-			val.SetUint(n)
-		case reflect.Float32, reflect.Float64:
-			n, err := toFloat64(item)
-			if err != nil {
-				return reflect.Value{}, fmt.Errorf("element %d: %w", i, err)
-			}
-			val.SetFloat(n)
-		case reflect.Bool:
-			b, ok := item.(bool)
-			if !ok {
-				return reflect.Value{}, fmt.Errorf("element %d is not a boolean", i)
-			}
-			val.SetBool(b)
-		default:
-			return reflect.Value{}, fmt.Errorf("unsupported slice element type: %s", t.Elem().Kind())
-		}
-
-		slice.Index(i).Set(val)
-	}
-
-	return slice, nil
-}
-
-func toInt64(v interface{}) (int64, error) {
-	switch v := v.(type) {
-	case int:
-		return int64(v), nil
-	case int32:
-		return int64(v), nil
-	case int64:
-		return v, nil
-	case float64:
-		return int64(v), nil
-	case string:
-		return strconv.ParseInt(v, 10, 64)
-	default:
-		return 0, fmt.Errorf("cannot convert %T to int64", v)
-	}
-}
-
-func toUint64(v interface{}) (uint64, error) {
-	switch v := v.(type) {
-	case uint:
-		return uint64(v), nil
-	case uint32:
-		return uint64(v), nil
-	case uint64:
-		return v, nil
-	case float64:
-		if v < 0 {
-			return 0, fmt.Errorf("negative value %f cannot be converted to uint64", v)
-		}
-		return uint64(v), nil
-	case string:
-		return strconv.ParseUint(v, 10, 64)
-	default:
-		return 0, fmt.Errorf("cannot convert %T to uint64", v)
-	}
-}
-
-func toFloat64(v interface{}) (float64, error) {
-	switch v := v.(type) {
-	case float32:
-		return float64(v), nil
-	case float64:
-		return v, nil
-	case int:
-		return float64(v), nil
-	case int64:
-		return float64(v), nil
-	case string:
-		return strconv.ParseFloat(v, 64)
-	default:
-		return 0, fmt.Errorf("cannot convert %T to float64", v)
-	}
-}
-
-// sanitizeEnvPrefix 清理环境变量前缀，转换为符合 POSIX 标准的环境变量格式
-// 规则：
-// 1. 只允许大写字母、数字和下划线
-// 2. 必须以字母开头
-// 3. 自动转换为大写
-// 4. 特殊字符转换为下划线
-func sanitizeEnvPrefix(prefix string) string {
-	if prefix == "" {
-		return ""
-	}
-
-	var b strings.Builder
-	var lastValid bool
-
-	// 跳过开头的非字母字符，确保以字母开头
-	for i := 0; i < len(prefix) && !isLetter(prefix[i]); i++ {
-		prefix = prefix[1:]
-	}
-
-	// 如果没有字母开头，返回空字符串
-	if prefix == "" || !isLetter(prefix[0]) {
-		return ""
-	}
-
-	// 处理剩余字符，保证只包含合法字符
-	for i := 0; i < len(prefix); i++ {
-		c := prefix[i]
-		if isAlphanumeric(c) {
-			if !lastValid && b.Len() > 0 {
-				b.WriteByte('_')
-			}
-			b.WriteByte(toUpper(c))
-			lastValid = true
-		} else {
-			lastValid = false
-		}
-	}
-
-	return b.String()
-}
-
-// isLetter 判断字符是否为字母
-func isLetter(c byte) bool {
-	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
-}
-
-// isAlphanumeric 判断字符是否为字母或数字
-func isAlphanumeric(c byte) bool {
-	return isLetter(c) || (c >= '0' && c <= '9')
-}
-
-// toUpper 将字符转换为大写
-func toUpper(c byte) byte {
-	if c >= 'a' && c <= 'z' {
-		return c - 32
-	}
-	return c
 }

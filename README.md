@@ -192,7 +192,6 @@ value := cfg.GetFloat("metrics.value")     // 返回 0.0
 
 ##### 支持的类型
 - 切片类型：[]string、[]int、[]float64、[]bool
-- 映射类型：map[string]interface{}、map[string]string
 - 时间类型：time.Duration
 
 ##### 设置方式
@@ -305,13 +304,13 @@ if err := cfg.Unmarshal(&dbConfig, "database"); err != nil {
 
 ### 结构体标签说明
 
-- `config:"key"`: 指定配置键名（支持多标签格式：`config`,`yaml`,`toml`,`json`,`env`,`ini`）。
-  - 按照优先级顺序依次查找：config > yaml > toml > json > env > ini
+- `config:"key"`: 指定配置键名。
+  - 包内部按照优先级顺序依次查找：config > json > toml > yaml > yml > properties > props > prop > hcl > tfvars > dotenv > env > ini
   - 使用找到的第一个有效标签值作为配置键名
   - 示例：
     ```go
     type Config struct {
-        Host string `config:"host" yaml:"hostname" toml:"host_name"`
+        Host string `config:"host" json:"hostname" toml:"host_name"`
         // 将优先使用 config 标签的值，如果没有则尝试 yaml 标签，以此类推
     }
     ```

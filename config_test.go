@@ -471,28 +471,6 @@ func TestUtilityFunctions(t *testing.T) {
 			t.Errorf("WorkPath子路径拼接错误: %s", subPath)
 		}
 	})
-
-	t.Run("sanitizeEnvPrefix", func(t *testing.T) {
-		tests := []struct {
-			input    string
-			expected string
-		}{
-			{"app", "APP"},
-			{"my-app", "MY_APP"},
-			{"MY_APP", "MY_APP"},
-			{"my.app", "MY_APP"},
-			{"my@app", "MY_APP"},
-			{"my app", "MY_APP"},
-		}
-
-		for _, test := range tests {
-			result := sanitizeEnvPrefix(test.input)
-			if result != test.expected {
-				t.Errorf("sanitizeEnvPrefix(%s) = %s; 期望 %s",
-					test.input, result, test.expected)
-			}
-		}
-	})
 }
 
 // 测试复杂数据结构
