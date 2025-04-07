@@ -15,8 +15,8 @@ func (c *Config) Get(key string, def ...any) any {
 		return nil
 	}
 
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.viperMu.RLock()
+	defer c.viperMu.RUnlock()
 
 	val := c.viper.Get(key)
 	if val == nil && len(def) > 0 {
@@ -48,8 +48,8 @@ func (c *Config) GetBool(parts ...string) bool {
 		}
 	}
 
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.viperMu.RLock()
+	defer c.viperMu.RUnlock()
 
 	if !c.viper.IsSet(key) {
 		return defaultVal
@@ -81,8 +81,8 @@ func (c *Config) GetFloat(parts ...string) float64 {
 		}
 	}
 
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.viperMu.RLock()
+	defer c.viperMu.RUnlock()
 
 	if !c.viper.IsSet(key) {
 		return defaultVal
@@ -114,8 +114,8 @@ func (c *Config) GetInt(parts ...string) int {
 		}
 	}
 
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.viperMu.RLock()
+	defer c.viperMu.RUnlock()
 
 	if !c.viper.IsSet(key) {
 		return defaultVal
@@ -147,8 +147,8 @@ func (c *Config) GetString(parts ...string) string {
 		}
 	}
 
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.viperMu.RLock()
+	defer c.viperMu.RUnlock()
 
 	if !c.viper.IsSet(key) {
 		return defaultVal
@@ -159,42 +159,42 @@ func (c *Config) GetString(parts ...string) string {
 
 // GetStringSlice 获取字符串切片配置
 func (c *Config) GetStringSlice(key string) []string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.viperMu.RLock()
+	defer c.viperMu.RUnlock()
 	return c.viper.GetStringSlice(key)
 }
 
 // GetIntSlice 获取整数切片配置
 func (c *Config) GetIntSlice(key string) []int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.viperMu.RLock()
+	defer c.viperMu.RUnlock()
 	return c.viper.GetIntSlice(key)
 }
 
 // GetStringMap 获取字符串映射配置
 func (c *Config) GetStringMap(key string) map[string]any {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.viperMu.RLock()
+	defer c.viperMu.RUnlock()
 	return c.viper.GetStringMap(key)
 }
 
 // GetStringMapString 获取字符串-字符串映射配置
 func (c *Config) GetStringMapString(key string) map[string]string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.viperMu.RLock()
+	defer c.viperMu.RUnlock()
 	return c.viper.GetStringMapString(key)
 }
 
 // GetTime 获取时间配置
 func (c *Config) GetTime(key string) time.Time {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.viperMu.RLock()
+	defer c.viperMu.RUnlock()
 	return c.viper.GetTime(key)
 }
 
 // GetDuration 获取时间间隔配置
 func (c *Config) GetDuration(key string) time.Duration {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.viperMu.RLock()
+	defer c.viperMu.RUnlock()
 	return c.viper.GetDuration(key)
 }

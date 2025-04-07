@@ -17,11 +17,11 @@ import (
 // 支持大驼峰命名风格的结构体字段自动映射到下划线风格的配置键名
 func (c *Config) Unmarshal(obj any, key ...string) error {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
 
 	// 如果是结构体指针，则设置默认值
 	if reflect.TypeOf(obj).Kind() == reflect.Ptr && reflect.TypeOf(obj).Elem().Kind() == reflect.Struct {
 		if err := setDefaultValues(obj); err != nil {
+			c.mu.RUnlock()
 			return fmt.Errorf("set defaults: %w", err)
 		}
 	}
@@ -59,8 +59,12 @@ func (c *Config) Unmarshal(obj any, key ...string) error {
 
 	decoder, err := mapstructure.NewDecoder(decoderConfig)
 	if err != nil {
+		c.mu.RUnlock()
 		return fmt.Errorf("create decoder: %w", err)
 	}
+
+	// 使用 viperMu 保护对 viper 的访问
+	c.viperMu.RLock()
 
 	// 获取配置数据
 	var data map[string]any
@@ -73,6 +77,9 @@ func (c *Config) Unmarshal(obj any, key ...string) error {
 	} else {
 		data = c.viper.AllSettings()
 	}
+
+	c.viperMu.RUnlock()
+	c.mu.RUnlock()
 
 	// 如果没有配置数据，保持默认值
 	if len(data) == 0 {
