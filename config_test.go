@@ -138,6 +138,8 @@ server:
 
 	// 测试环境变量
 	t.Run("环境变量", func(t *testing.T) {
+		// t.Skip("环境变量测试可能依赖文件系统或特定环境，暂时跳过")
+
 		os.Setenv("APP_DATABASE_HOST", "envhost.example.com")
 
 		// 重新初始化以加载环境变量

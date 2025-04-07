@@ -227,5 +227,5 @@ func main() {
 		_ = app.cfg.Set("server.port", 9898)
 		_ = app.cfg.Set("redis.addresses", "127.0.0.1:6379")
 	})
-	select {}
+	time.Sleep(40 * time.Second)
 }
