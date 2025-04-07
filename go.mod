@@ -5,7 +5,7 @@ go 1.21.0
 require (
 	github.com/fsnotify/fsnotify v1.8.0
 	github.com/go-viper/mapstructure/v2 v2.2.1
-	github.com/spf13/cast v1.6.0
+	github.com/spf13/cast v1.7.1
 	github.com/spf13/viper v1.19.0
 	github.com/stretchr/testify v1.9.0
 )
