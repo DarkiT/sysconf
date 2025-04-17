@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 )
 
@@ -32,16 +33,17 @@ type EnvOptions struct {
 // Config 配置结构体
 type Config struct {
 	viper         *viper.Viper
-	path          string       // 配置文件路径
-	mode          string       // 配置文件类型
-	name          string       // 配置文件名称
-	content       string       // 默认配置文件内容
-	envOptions    EnvOptions   // 环境变量配置选项
-	lastUpdate    time.Time    // 配置最后更新时间
-	writeTimer    *time.Timer  // 延迟写入定时器
-	pendingWrites bool         // 是否有待写入的更改
-	mu            sync.RWMutex // 读取操作的锁
-	writeMu       sync.Mutex   // 写入操作的互斥锁
+	path          string           // 配置文件路径
+	mode          string           // 配置文件类型
+	name          string           // 配置文件名称
+	content       string           // 默认配置文件内容
+	pflag         []*pflag.FlagSet // 默认命令行标志绑定
+	envOptions    EnvOptions       // 环境变量配置选项
+	lastUpdate    time.Time        // 配置最后更新时间
+	writeTimer    *time.Timer      // 延迟写入定时器
+	pendingWrites bool             // 是否有待写入的更改
+	mu            sync.RWMutex     // 读取操作的锁
+	writeMu       sync.Mutex       // 写入操作的互斥锁
 }
 
 // Option 配置选项
@@ -163,6 +165,13 @@ func (c *Config) initialize() error {
 
 	if err := c.initializeEnv(); err != nil {
 		return fmt.Errorf("initialize env: %w", err)
+	}
+
+	// 绑定命令行参数
+	for _, flags := range c.pflag {
+		if err := c.viper.BindPFlags(flags); err != nil {
+			return fmt.Errorf("bind flags: %w", err)
+		}
 	}
 
 	if c.path != "" {

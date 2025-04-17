@@ -8,7 +8,7 @@
 
 ## 特性
 
-- 支持多种配置格式：YAML, JSON, TOML, INI, ENV, Properties
+- 支持多种配置格式：YAML, JSON, TOML, Dotenv, ENV
 - 环境变量覆盖配置
 - 配置热重载
 - 默认值设置

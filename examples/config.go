@@ -89,7 +89,7 @@ func NewApp() (*App, error) {
 		sysconf.WithPath("."),
 		sysconf.WithMode("yaml"),
 		sysconf.WithName("app"),
-		sysconf.WithContent(defaultConfig),
+		// sysconf.WithContent(defaultConfig),
 		sysconf.WithEnvOptions(sysconf.EnvOptions{
 			Prefix:  "APP",
 			Enabled: true,
@@ -227,5 +227,5 @@ func main() {
 		_ = app.cfg.Set("server.port", 9898)
 		_ = app.cfg.Set("redis.addresses", "127.0.0.1:6379")
 	})
-	time.Sleep(40 * time.Second)
+	time.Sleep(20 * time.Second)
 }

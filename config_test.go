@@ -611,11 +611,10 @@ port = 5432
 `,
 		},
 		{
-			format: "ini",
+			format: "dotenv",
 			content: `
-[database]
-host = localhost
-port = 5432
+DATABASE_HOST=localhost
+DATABASE_PORT=5432
 `,
 		},
 	}
@@ -633,11 +632,20 @@ port = 5432
 			}
 
 			// 验证配置读取
-			if host := cfg.GetString("database.host"); host != "localhost" {
-				t.Errorf("%s 格式 host 值错误,期望 localhost,获得 %s",
-					test.format, host)
+			var host, portPath string
+			if test.format == "dotenv" {
+				host = "DATABASE_HOST"
+				portPath = "DATABASE_PORT"
+			} else {
+				host = "database.host"
+				portPath = "database.port"
 			}
-			if port := cfg.GetInt("database.port"); port != 5432 {
+
+			if hostVal := cfg.GetString(host); hostVal != "localhost" {
+				t.Errorf("%s 格式 host 值错误,期望 localhost,获得 %s",
+					test.format, hostVal)
+			}
+			if port := cfg.GetInt(portPath); port != 5432 {
 				t.Errorf("%s 格式 port 值错误,期望 5432,获得 %d",
 					test.format, port)
 			}

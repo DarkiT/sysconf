@@ -1,5 +1,7 @@
 package sysconf
 
+import "github.com/spf13/pflag"
+
 // WithPath 设置配置文件路径
 func WithPath(path string) Option {
 	return func(c *Config) {
@@ -32,5 +34,12 @@ func WithEnvOptions(opts EnvOptions) Option {
 func WithContent(content string) Option {
 	return func(c *Config) {
 		c.content = content
+	}
+}
+
+// WithBindPFlags 设置命令行标志绑定
+func WithBindPFlags(pflag ...*pflag.FlagSet) Option {
+	return func(c *Config) {
+		c.pflag = pflag
 	}
 }

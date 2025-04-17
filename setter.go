@@ -61,6 +61,6 @@ func (c *Config) Set(key string, value any) error {
 func (c *Config) SetEnvPrefix(prefix string) error {
 	c.envOptions.Prefix = prefix
 	c.envOptions.Enabled = prefix != "" // 如果有前缀就启用环境变量
-	err := c.initialize()
-	return err
+
+	return c.initialize()
 }
