@@ -22,6 +22,24 @@ var (
 
 	ErrInvalidKey       = errors.New("invalid configuration key")
 	ErrInitGlobalConfig = errors.New("failed to initialize global config")
+	// defaultExcludedFlags 默认要从viper绑定中排除的标志
+	defaultExcludedFlags = map[string]bool{
+		// 帮助标志
+		"help": true,
+		"h":    true,
+
+		// 版本标志
+		"version": true,
+		"v":       true,
+
+		// 完成相关标志
+		"completion":            true,
+		"gen-completion":        true,
+		"completion-bash":       true,
+		"completion-zsh":        true,
+		"completion-fish":       true,
+		"completion-powershell": true,
+	}
 )
 
 // EnvOptions 环境变量配置选项
@@ -32,18 +50,21 @@ type EnvOptions struct {
 
 // Config 配置结构体
 type Config struct {
-	viper         *viper.Viper
-	path          string           // 配置文件路径
-	mode          string           // 配置文件类型
-	name          string           // 配置文件名称
-	content       string           // 默认配置文件内容
-	pflag         []*pflag.FlagSet // 默认命令行标志绑定
-	envOptions    EnvOptions       // 环境变量配置选项
-	lastUpdate    time.Time        // 配置最后更新时间
-	writeTimer    *time.Timer      // 延迟写入定时器
-	pendingWrites bool             // 是否有待写入的更改
-	mu            sync.RWMutex     // 读取操作的锁
-	writeMu       sync.Mutex       // 写入操作的互斥锁
+	viper                *viper.Viper
+	logger               Logger           // 日志记录器
+	path                 string           // 配置文件路径
+	mode                 string           // 配置文件类型
+	name                 string           // 配置文件名称
+	content              string           // 默认配置文件内容
+	pflag                []*pflag.FlagSet // 默认命令行标志绑定
+	envOptions           EnvOptions       // 环境变量配置选项
+	lastUpdate           time.Time        // 配置最后更新时间
+	writeTimer           *time.Timer      // 延迟写入定时器
+	pendingWrites        bool             // 是否有待写入的更改
+	mu                   sync.RWMutex     // 读取操作的锁
+	writeMu              sync.Mutex       // 写入操作的互斥锁
+	defaultExcludedFlags map[string]bool  // 默认排除的标志
+	excludedFlags        map[string]bool  // 用户自定义排除的标志
 }
 
 // Option 配置选项
@@ -56,9 +77,10 @@ func New(opts ...Option) (*Config, error) {
 	})
 	// 创建默认配置
 	c := &Config{
-		viper: viper.New(),
-		path:  workPathValue,
-		mode:  "yaml",
+		viper:                viper.New(),
+		path:                 workPathValue,
+		mode:                 "yaml",
+		defaultExcludedFlags: defaultExcludedFlags,
 	}
 
 	// 应用自定义选项
@@ -80,6 +102,7 @@ func Default(opts ...Option) *Config {
 		var err error
 		globalConfig, err = New(opts...)
 		if err != nil {
+			// 保留panic以确保程序终止
 			panic(fmt.Errorf("%w: %v", ErrInitGlobalConfig, err))
 		}
 	})
@@ -113,14 +136,17 @@ func (c *Config) Watch(callbacks ...func()) {
 		c.lastUpdate = now
 		c.mu.Unlock()
 
+		c.logger.Infof("Config file change detected: %s", e.Name)
 		if len(c.viper.AllKeys()) > 0 {
 			for _, cb := range callbacks {
 				cb()
 			}
+			c.logger.Debugf("Executed %d config change callbacks", len(callbacks))
 		}
 	})
 
 	c.viper.WatchConfig()
+	c.logger.Infof("Config file watching started")
 }
 
 // Viper 返回底层的 viper 实例
@@ -138,17 +164,22 @@ func (c *Config) createDefaultConfig() error {
 	configFile := filepath.Join(c.path, c.name+"."+c.mode)
 
 	if err := os.MkdirAll(filepath.Dir(configFile), 0o755); err != nil {
+		c.logger.Errorf("Failed to create config directory: %v", err)
 		return fmt.Errorf("create config directory: %w", err)
 	}
 
+	c.logger.Infof("Creating default config file: %s", configFile)
 	if err := os.WriteFile(configFile, []byte(c.content), 0o644); err != nil {
+		c.logger.Errorf("Failed to write default config: %v", err)
 		return fmt.Errorf("write default config: %w", err)
 	}
 
 	if err := c.viper.ReadInConfig(); err != nil {
+		c.logger.Errorf("Failed to read new config: %v", err)
 		return fmt.Errorf("read new config: %w", err)
 	}
 
+	c.logger.Infof("Default config file created successfully")
 	return nil
 }
 
@@ -161,17 +192,29 @@ func (c *Config) initialize() error {
 		c.writeTimer.Stop()
 	}
 
+	// 确保有一个日志记录器
+	if c.logger == nil {
+		c.logger = &NopLogger{}
+	}
+
 	c.viper = viper.New()
 
 	if err := c.initializeEnv(); err != nil {
 		return fmt.Errorf("initialize env: %w", err)
 	}
 
-	// 绑定命令行参数
+	// 绑定命令行参数（排除Cobra默认参数）
 	for _, flags := range c.pflag {
-		if err := c.viper.BindPFlags(flags); err != nil {
-			return fmt.Errorf("bind flags: %w", err)
-		}
+		// 获取所有注册的flags
+		flags.VisitAll(func(f *pflag.Flag) {
+			// 排除不需要绑定的参数
+			if !c.isExcludedFlag(f.Name) {
+				// 只绑定非排除参数
+				if err := c.viper.BindPFlag(f.Name, f); err != nil {
+					c.logger.Errorf("Failed to bind flag %s: %v", f.Name, err)
+				}
+			}
+		})
 	}
 
 	if c.path != "" {
@@ -219,37 +262,44 @@ func (c *Config) initializeEnv() error {
 }
 
 func (c *Config) loadOrCreateConfig() error {
-	if err := c.viper.ReadInConfig(); err != nil {
+	// 尝试加载配置
+	err := c.viper.ReadInConfig()
+	if err != nil {
 		var configFileNotFoundError viper.ConfigFileNotFoundError
-		if !errors.As(err, &configFileNotFoundError) {
-			return fmt.Errorf("read config: %w", err)
-		}
-
-		if c.content != "" {
+		if errors.As(err, &configFileNotFoundError) {
+			c.logger.Infof("Config file not found, creating default config")
+			// 配置文件不存在，创建默认配置
 			if err := c.createDefaultConfig(); err != nil {
 				return fmt.Errorf("create default config: %w", err)
 			}
+			return nil
 		}
+		c.logger.Errorf("Failed to read config file: %v", err)
+		return fmt.Errorf("read config: %w", err)
 	}
-
+	
+	c.logger.Infof("Successfully loaded config file: %s", c.viper.ConfigFileUsed())
 	return nil
 }
 
 func (c *Config) validateMode() error {
 	if c.mode == "" {
-		c.mode = "yaml"
+		c.mode = "yaml" // 默认为yaml
+		c.logger.Debugf("Config mode not specified, using default mode: yaml")
 		return nil
 	}
 
-	// 检查是否是支持的格式
+	// 检查是否是支持的文件类型
 	for _, ext := range viper.SupportedExts {
-		if c.mode == ext {
+		if ext == c.mode {
 			return nil
 		}
 	}
 
-	// 如果不支持，返回错误
-	return fmt.Errorf("unsupported config mode: %s (supported: %s)", c.mode, strings.Join(viper.SupportedExts, ", "))
+	c.logger.Errorf("Unsupported config mode: %s (supported modes: %s)", 
+		c.mode, strings.Join(viper.SupportedExts, ", "))
+	return fmt.Errorf("unsupported config mode: %s (supported: %s)", 
+		c.mode, strings.Join(viper.SupportedExts, ", "))
 }
 
 // validatePath 验证并规范化配置文件路径
@@ -323,4 +373,14 @@ func (c *Config) ensureDirectoryAccess() error {
 	_ = os.Remove(tempName)
 
 	return nil
+}
+
+// isExcludedFlag 判断标志是否应该被排除在viper绑定之外
+func (c *Config) isExcludedFlag(flagName string) bool {
+	// 首先检查用户自定义排除标志
+	if c.excludedFlags[flagName] {
+		return true
+	}
+	// 然后检查默认排除标志
+	return c.defaultExcludedFlags[flagName]
 }
