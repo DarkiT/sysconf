@@ -7,6 +7,13 @@ import (
 )
 
 // Get 获取配置值
+//
+// 参数:
+//   - key: 配置键名
+//   - def: 可选的默认值，当配置不存在时返回
+//
+// 返回值:
+//   - 配置值，如果键不存在且提供了默认值则返回默认值
 func (c *Config) Get(key string, def ...any) any {
 	if key == "" {
 		if len(def) > 0 {
@@ -26,6 +33,12 @@ func (c *Config) Get(key string, def ...any) any {
 }
 
 // GetBool 获取布尔值配置
+//
+// 参数:
+//   - parts: 可变参数，第一个参数是键名（可以包含点号分隔的路径），最后一个参数可选作为默认值
+//
+// 返回值:
+//   - 布尔类型的配置值，如果键不存在且提供了默认值则返回默认值
 func (c *Config) GetBool(parts ...string) bool {
 	if len(parts) == 0 {
 		return false
@@ -59,6 +72,12 @@ func (c *Config) GetBool(parts ...string) bool {
 }
 
 // GetFloat 获取浮点数配置
+//
+// 参数:
+//   - parts: 可变参数，第一个参数是键名（可以包含点号分隔的路径），最后一个参数可选作为默认值
+//
+// 返回值:
+//   - 浮点类型的配置值，如果键不存在且提供了默认值则返回默认值
 func (c *Config) GetFloat(parts ...string) float64 {
 	if len(parts) == 0 {
 		return 0
@@ -92,6 +111,12 @@ func (c *Config) GetFloat(parts ...string) float64 {
 }
 
 // GetInt 获取整数配置
+//
+// 参数:
+//   - parts: 可变参数，第一个参数是键名（可以包含点号分隔的路径），最后一个参数可选作为默认值
+//
+// 返回值:
+//   - 整数类型的配置值，如果键不存在且提供了默认值则返回默认值
 func (c *Config) GetInt(parts ...string) int {
 	if len(parts) == 0 {
 		return 0
@@ -125,6 +150,12 @@ func (c *Config) GetInt(parts ...string) int {
 }
 
 // GetString 获取字符串配置
+//
+// 参数:
+//   - parts: 可变参数，第一个参数是键名（可以包含点号分隔的路径），最后一个参数可选作为默认值
+//
+// 返回值:
+//   - 字符串类型的配置值，如果键不存在且提供了默认值则返回默认值
 func (c *Config) GetString(parts ...string) string {
 	if len(parts) == 0 {
 		return ""
@@ -158,6 +189,12 @@ func (c *Config) GetString(parts ...string) string {
 }
 
 // GetStringSlice 获取字符串切片配置
+//
+// 参数:
+//   - key: 配置键名
+//
+// 返回值:
+//   - 字符串切片类型的配置值
 func (c *Config) GetStringSlice(key string) []string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -165,6 +202,12 @@ func (c *Config) GetStringSlice(key string) []string {
 }
 
 // GetIntSlice 获取整数切片配置
+//
+// 参数:
+//   - key: 配置键名
+//
+// 返回值:
+//   - 整数切片类型的配置值
 func (c *Config) GetIntSlice(key string) []int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -172,6 +215,12 @@ func (c *Config) GetIntSlice(key string) []int {
 }
 
 // GetStringMap 获取字符串映射配置
+//
+// 参数:
+//   - key: 配置键名
+//
+// 返回值:
+//   - 字符串映射类型的配置值，映射值为任意类型
 func (c *Config) GetStringMap(key string) map[string]any {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -179,6 +228,12 @@ func (c *Config) GetStringMap(key string) map[string]any {
 }
 
 // GetStringMapString 获取字符串-字符串映射配置
+//
+// 参数:
+//   - key: 配置键名
+//
+// 返回值:
+//   - 字符串到字符串的映射类型配置值
 func (c *Config) GetStringMapString(key string) map[string]string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -186,6 +241,12 @@ func (c *Config) GetStringMapString(key string) map[string]string {
 }
 
 // GetTime 获取时间配置
+//
+// 参数:
+//   - key: 配置键名
+//
+// 返回值:
+//   - 时间类型的配置值
 func (c *Config) GetTime(key string) time.Time {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -193,6 +254,12 @@ func (c *Config) GetTime(key string) time.Time {
 }
 
 // GetDuration 获取时间间隔配置
+//
+// 参数:
+//   - key: 配置键名
+//
+// 返回值:
+//   - 时间间隔类型的配置值
 func (c *Config) GetDuration(key string) time.Duration {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

@@ -8,6 +8,14 @@ import (
 	mapstructure "github.com/go-viper/mapstructure/v2"
 )
 
+// Marshal 将结构体或其他数据类型序列化并保存到配置中
+//
+// 参数:
+//   - value: 要序列化的值（通常是结构体）
+//   - prefix: 可选的配置键前缀，用于指定保存路径
+//
+// 返回值:
+//   - error: 序列化过程中遇到的错误，成功则为nil
 func (c *Config) Marshal(value any, prefix ...string) error {
 	if c.viper == nil {
 		return fmt.Errorf("viper instance not initialized")
@@ -29,7 +37,11 @@ func (c *Config) Marshal(value any, prefix ...string) error {
 	return nil
 }
 
-// 递归设置map到viper中
+// setMapToViper 递归设置map到viper中
+//
+// 参数:
+//   - prefix: 配置键前缀
+//   - m: 要设置的映射数据
 func (c *Config) setMapToViper(prefix string, m map[string]any) {
 	for key, val := range m {
 		k := key
@@ -59,7 +71,14 @@ func (c *Config) setMapToViper(prefix string, m map[string]any) {
 	}
 }
 
-// 深度合并两个 map
+// deepMerge 深度合并两个 map
+//
+// 参数:
+//   - m1: 目标映射，合并结果将存储在此
+//   - m2: 源映射，其值将合并到m1中
+//
+// 返回值:
+//   - map[string]any: 合并后的映射
 func deepMerge(m1, m2 map[string]any) map[string]any {
 	if m1 == nil {
 		m1 = make(map[string]any)
