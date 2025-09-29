@@ -1,0 +1,72 @@
+# 🛡️ Sysconf 完整配置示例，集成新验证器系统
+app:
+  name: "MyApp"
+  version: "1.0.0"
+  env: "development"
+
+# 服务器配置 - 由 NewWebServerValidator 验证
+server:
+  host: localhost
+  port: 8080
+  timeout: 30s
+  features:
+    - http
+    - grpc
+    - websocket
+
+# 数据库配置 - 由 NewDatabaseValidator 验证
+database:
+  host: localhost
+  port: 5432
+  username: postgres
+  password: "demo"  # 演示用密码，生产环境请使用环境变量
+  database: "myapp"
+  timeout: 10s
+  max_conns: 10
+  type: "postgresql"  # 验证器支持的数据库类型
+  options:
+    sslmode: disable
+    timezone: UTC
+
+# Redis配置 - 由 NewRedisValidator 验证
+redis:
+  host: localhost
+  port: 6379
+  addresses:
+    - localhost:6379
+  password: ""
+  db: 0
+  timeout: 5s
+
+# 日志配置 - 由 NewLogValidator 验证
+logging:
+  level: info
+  format: json
+  path: logs/app.log
+
+# 邮件配置 - 由 NewEmailValidator 验证 (用于演示)
+email:
+  smtp:
+    host: smtp.example.com
+    port: 587
+    username: user@example.com
+    password: mailpass123
+  from: noreply@example.com
+
+# API配置 - 由 NewAPIValidator 验证 (用于演示)
+api:
+  base_url: https://api.example.com
+  timeout: 30
+  rate_limit:
+    enabled: true
+    requests_per_minute: 1000
+  auth:
+    api_key: sk-demo1234567890
+
+# 监控指标配置 - 用于演示浮点数切片功能
+metrics:
+  thresholds: [0.7, 0.85, 0.95]  # 性能阈值
+
+# 数据分析配置 - 用于演示浮点数切片功能  
+analytics:
+  weights: ["1.0", "2.5", "3.2"]  # 分析权重（字符串格式）
