@@ -55,4 +55,4 @@ func (l *NopLogger) Errorf(format string, args ...interface{}) {}
 func (l *NopLogger) Fatal(args ...interface{}) {}
 
 // Fatalf 实现Logger接口
-func (l *NopLogger) Fatalf(format string, args ...interface{}) {} 
+func (l *NopLogger) Fatalf(format string, args ...interface{}) {}

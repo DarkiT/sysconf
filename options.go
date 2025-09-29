@@ -3,6 +3,7 @@ package sysconf
 import (
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/pflag"
 )
@@ -59,6 +60,24 @@ func WithEnvOptions(opts EnvOptions) Option {
 	}
 }
 
+// WithEnv 便利函数：启用环境变量并设置前缀，默认开启智能大小写匹配
+func WithEnv(prefix string) Option {
+	return WithEnvOptions(EnvOptions{
+		Prefix:    prefix,
+		Enabled:   true,
+		SmartCase: true, // 🆕 默认启用智能大小写匹配
+	})
+}
+
+// WithEnvSmartCase 便利函数：设置环境变量选项并明确指定智能大小写匹配
+func WithEnvSmartCase(prefix string, smartCase bool) Option {
+	return WithEnvOptions(EnvOptions{
+		Prefix:    prefix,
+		Enabled:   true,
+		SmartCase: smartCase,
+	})
+}
+
 // WithContent 设置默认配置文件内容
 func WithContent(content string) Option {
 	return func(c *Config) {
@@ -69,7 +88,7 @@ func WithContent(content string) Option {
 // WithBindPFlags 设置命令行标志绑定
 func WithBindPFlags(flags ...*pflag.FlagSet) Option {
 	return func(c *Config) {
-		c.pflag = flags
+		c.pflags = flags
 	}
 }
 
@@ -80,14 +99,77 @@ func WithLogger(logger Logger) Option {
 	}
 }
 
-// WithExcludedFlags 设置要排除的命令行标志（不会被绑定）
-func WithExcludedFlags(flags []string) Option {
+// WithValidator 添加配置验证器
+func WithValidator(validator ConfigValidator) Option {
 	return func(c *Config) {
-		if c.excludedFlags == nil {
-			c.excludedFlags = make(map[string]bool)
+		if c.validators == nil {
+			c.validators = make([]ConfigValidator, 0)
 		}
-		for _, flag := range flags {
-			c.excludedFlags[flag] = true
+		c.validators = append(c.validators, validator)
+	}
+}
+
+// WithValidateFunc 添加配置验证函数（便利方法）
+func WithValidateFunc(fn func(config map[string]any) error) Option {
+	return WithValidator(ConfigValidateFunc(fn))
+}
+
+// WithValidators 批量添加多个验证器
+func WithValidators(validators ...ConfigValidator) Option {
+	return func(c *Config) {
+		if c.validators == nil {
+			c.validators = make([]ConfigValidator, 0, len(validators))
 		}
+		c.validators = append(c.validators, validators...)
+	}
+}
+
+// WithCrypto 设置配置加密选项
+func WithCrypto(opts CryptoOptions) Option {
+	return func(c *Config) {
+		c.cryptoOptions = opts
+	}
+}
+
+// WithEncryption 便利函数：启用配置加密并设置密钥
+// key: 加密密钥，如果为空则生成随机密钥
+func WithEncryption(key string) Option {
+	return WithCrypto(CryptoOptions{
+		Enabled: true,
+		Key:     key,
+	})
+}
+
+// WithEncryptionCrypto 便利函数：启用配置加密并使用自定义加密器
+// crypto: 自定义加密实现
+func WithEncryptionCrypto(crypto ConfigCrypto) Option {
+	return WithCrypto(CryptoOptions{
+		Enabled: true,
+		Crypto:  crypto,
+	})
+}
+
+// WithWriteFlushDelay 设置配置写入的延迟时间，为0或负值时表示立即写入。
+func WithWriteFlushDelay(delay time.Duration) Option {
+	return func(c *Config) {
+		if delay < 0 {
+			delay = 0
+		}
+		c.writeDelay = delay
+	}
+}
+
+// WithCacheTiming 设置读取缓存的预热与重建延迟。
+// 传入 0 或负值可用于禁用对应延迟并在同一 goroutine 中立即刷新。
+func WithCacheTiming(warmup, rebuild time.Duration) Option {
+	return func(c *Config) {
+		if warmup < 0 {
+			warmup = 0
+		}
+		if rebuild < 0 {
+			rebuild = 0
+		}
+		c.cacheWarmupDelay = warmup
+		c.cacheRebuildDelay = rebuild
 	}
 }

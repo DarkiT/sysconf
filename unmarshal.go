@@ -8,6 +8,8 @@ import (
 
 	mapstructure "github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
+
+	"github.com/darkit/sysconf/internal/utils"
 )
 
 // Unmarshal 将配置解析到结构体
@@ -96,7 +98,7 @@ func (c *Config) Unmarshal(obj any, key ...string) error {
 	// 如果是结构体指针，则验证必填字段
 	if reflect.TypeOf(obj).Kind() == reflect.Ptr && reflect.TypeOf(obj).Elem().Kind() == reflect.Struct {
 		c.logger.Debugf("Validating required fields")
-		if err := validateStruct(obj); err != nil {
+		if err := utils.ValidateStruct(obj); err != nil {
 			c.logger.Errorf("Field validation failed: %v", err)
 			return fmt.Errorf("validate: %w", err)
 		}
@@ -104,4 +106,25 @@ func (c *Config) Unmarshal(obj any, key ...string) error {
 
 	c.logger.Infof("Config parsed successfully")
 	return nil
+}
+
+// setDefaultValues 设置默认值
+func setDefaultValues(obj any) error {
+	return utils.SetDefaultValues(obj)
+}
+
+func stringToSliceHookFunc() mapstructure.DecodeHookFunc {
+	return utils.StringToSliceHookFunc()
+}
+
+func stringToMapHookFunc() mapstructure.DecodeHookFunc {
+	return utils.StringToMapHookFunc()
+}
+
+func camelToSnake(s string) string {
+	return utils.CamelToSnake(s)
+}
+
+func snakeToCamel(s string) string {
+	return utils.SnakeToCamel(s)
 }

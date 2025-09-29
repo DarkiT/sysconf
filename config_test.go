@@ -15,7 +15,7 @@ type TestConf struct {
 	Database struct {
 		Host     string `config:"host" default:"localhost"`
 		Port     int    `config:"port" default:"5432"`
-		User     string `config:"user" required:"true"`
+		Username string `config:"username" required:"true"`
 		Password string `config:"password" required:"true"`
 		Timeout  int    `config:"timeout" default:"30"`
 	} `config:"database"`
@@ -40,7 +40,7 @@ func TestConfig(t *testing.T) {
 database:
   host: "testdb.example.com"
   port: 5432
-  user: "testuser"
+  username: "testuser"
   password: "testpass"
   timeout: 60
 server:
@@ -142,10 +142,19 @@ server:
 
 		os.Setenv("APP_DATABASE_HOST", "envhost.example.com")
 
-		// 重新初始化以加载环境变量
-		cfg.SetEnvPrefix("APP")
+		// 创建新的配置实例以避免之前设置的值干扰
+		envCfg, err := New(
+			WithContent(testConfig),
+			WithMode("yaml"),
+		)
+		if err != nil {
+			t.Fatalf("创建环境变量测试配置失败: %v", err)
+		}
 
-		if host := cfg.GetString("database.host"); host != "envhost.example.com" {
+		// 设置环境变量前缀以加载环境变量
+		envCfg.SetEnvPrefix("APP")
+
+		if host := envCfg.GetString("database.host"); host != "envhost.example.com" {
 			t.Errorf("环境变量未生效, 期望 envhost.example.com, 获得 %s", host)
 		}
 
@@ -456,6 +465,72 @@ database:
 			t.Errorf("环境变量前缀处理错误,期望 test_value,获得 %s", val)
 		}
 	})
+
+	// 🆕 智能大小写匹配测试
+	t.Run("智能大小写匹配", func(t *testing.T) {
+		// 清理可能存在的环境变量
+		envVarsToClean := []string{
+			"SMART_DATABASE_HOST", // 标准大写格式
+			"smart_database_host", // 全小写格式
+			"Smart_Database_Host", // 混合大小写格式
+			"SMART_SERVER_PORT",
+			"smart_server_port",
+		}
+
+		for _, envVar := range envVarsToClean {
+			os.Unsetenv(envVar)
+		}
+
+		// 测试小写环境变量
+		os.Setenv("smart_database_host", "lowercase_host")
+		os.Setenv("smart_server_port", "9090")
+		defer func() {
+			os.Unsetenv("smart_database_host")
+			os.Unsetenv("smart_server_port")
+		}()
+
+		// 使用便利函数WithEnv（默认启用SmartCase）
+		cfg, err := New(
+			WithPath(tmpDir),
+			WithMode("yaml"),
+			WithName("smart_case_test"),
+			WithEnv("SMART"), // 🆕 使用新的便利函数
+		)
+		if err != nil {
+			t.Fatalf("创建配置实例失败: %v", err)
+		}
+
+		// 验证小写环境变量能被正确识别
+		if host := cfg.GetString("database.host"); host != "lowercase_host" {
+			t.Errorf("智能大小写匹配失败，期望 lowercase_host，获得 %s", host)
+		}
+
+		if port := cfg.GetInt("server.port"); port != 9090 {
+			t.Errorf("智能大小写匹配失败，期望 9090，获得 %d", port)
+		}
+	})
+
+	// 🆕 测试禁用智能大小写匹配
+	t.Run("禁用智能大小写匹配", func(t *testing.T) {
+		// 只设置小写环境变量
+		os.Setenv("strict_test_value", "should_not_work")
+		defer os.Unsetenv("strict_test_value")
+
+		cfg, err := New(
+			WithPath(tmpDir),
+			WithMode("yaml"),
+			WithName("strict_case_test"),
+			WithEnvSmartCase("STRICT", false), // 🆕 明确禁用智能大小写匹配
+		)
+		if err != nil {
+			t.Fatalf("创建配置实例失败: %v", err)
+		}
+
+		// 小写环境变量应该不被识别（因为禁用了智能匹配）
+		if val := cfg.GetString("test.value"); val == "should_not_work" {
+			t.Errorf("禁用智能大小写匹配时不应该识别小写环境变量，但获得了 %s", val)
+		}
+	})
 }
 
 // 测试工具函数
@@ -708,4 +783,130 @@ func TestConfigPersistence(t *testing.T) {
 			}
 		}
 	})
+}
+
+// 环境变量优化基准测试
+
+func BenchmarkEnvBindingOptimized(b *testing.B) {
+	// 设置大量环境变量模拟真实环境
+	for i := 0; i < 1000; i++ {
+		os.Setenv(fmt.Sprintf("LARGE_ENV_VAR_%d", i), fmt.Sprintf("value_%d", i))
+	}
+
+	defer func() {
+		for i := 0; i < 1000; i++ {
+			os.Unsetenv(fmt.Sprintf("LARGE_ENV_VAR_%d", i))
+		}
+	}()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// 使用前缀，应该很快
+		cfg, err := New(WithEnv("APP"))
+		if err != nil {
+			b.Fatalf("Failed to create config: %v", err)
+		}
+		_ = cfg
+	}
+}
+
+func BenchmarkEnvBindingLargeEnvironment(b *testing.B) {
+	// 设置大量环境变量
+	for i := 0; i < 2000; i++ {
+		os.Setenv(fmt.Sprintf("LARGE_ENV_%d", i), fmt.Sprintf("value_%d", i))
+	}
+
+	defer func() {
+		for i := 0; i < 2000; i++ {
+			os.Unsetenv(fmt.Sprintf("LARGE_ENV_%d", i))
+		}
+	}()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// 没有前缀，应该跳过智能绑定
+		cfg, err := New(WithEnvOptions(EnvOptions{Enabled: true}))
+		if err != nil {
+			b.Fatalf("Failed to create config: %v", err)
+		}
+		_ = cfg
+	}
+}
+
+func BenchmarkConfigGetCached(b *testing.B) {
+	cfg, err := New(WithContent("test_key: test_value\nnested:\n  key: nested_value"))
+	if err != nil {
+		b.Fatalf("Failed to create config: %v", err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		val := cfg.Get("test_key")
+		_ = val
+	}
+}
+
+func BenchmarkConfigGetConcurrent(b *testing.B) {
+	cfg, err := New(WithContent("test_key: test_value\nnested:\n  key: nested_value"))
+	if err != nil {
+		b.Fatalf("Failed to create config: %v", err)
+	}
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			val := cfg.Get("test_key")
+			_ = val
+		}
+	})
+}
+
+func TestEnvOptimization(t *testing.T) {
+	tests := []struct {
+		name       string
+		envCount   int
+		prefix     string
+		expectSkip bool
+	}{
+		{"Large env without prefix", 600, "", true},
+		{"Large env with prefix", 1000, "APP", false},
+		{"Small env without prefix", 100, "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// 设置测试环境变量
+			for i := 0; i < tt.envCount; i++ {
+				os.Setenv(fmt.Sprintf("TEST_VAR_%d", i), "value")
+			}
+
+			defer func() {
+				for i := 0; i < tt.envCount; i++ {
+					os.Unsetenv(fmt.Sprintf("TEST_VAR_%d", i))
+				}
+			}()
+
+			start := time.Now()
+			var cfg *Config
+			var err error
+
+			if tt.prefix != "" {
+				cfg, err = New(WithEnv(tt.prefix))
+			} else {
+				cfg, err = New(WithEnvOptions(EnvOptions{Enabled: true}))
+			}
+
+			duration := time.Since(start)
+
+			if err != nil {
+				t.Fatalf("Failed to create config: %v", err)
+			}
+
+			// 验证性能：大环境变量时应该很快
+			if tt.expectSkip && duration > 50*time.Millisecond {
+				t.Errorf("Expected quick initialization due to skip, but took: %v", duration)
+			}
+
+			_ = cfg
+		})
+	}
 }
