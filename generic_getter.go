@@ -9,11 +9,11 @@ import (
 	"github.com/spf13/cast"
 )
 
-// 类型转换缓存，避免重复反射操作
-var (
-	typeCache   = make(map[reflect.Type]typeInfo)
-	typeCacheMu sync.RWMutex
-)
+// 类型转换缓存，使用 sync.Map 实现无锁读取
+var typeCache sync.Map // map[reflect.Type]*typeInfo
+
+// converterFunc 预编译的类型转换函数
+type converterFunc func(val any) (any, bool)
 
 type typeInfo struct {
 	kind       reflect.Kind
@@ -23,6 +23,7 @@ type typeInfo struct {
 	isBool     bool
 	isDuration bool
 	isTime     bool
+	converter  converterFunc // 预编译的转换函数
 }
 
 // GetAs 泛型获取配置值，提供类型安全的访问方式
@@ -49,12 +50,9 @@ func GetAs[T any](c *Config, key string, defaultValue ...T) T {
 		}
 	}
 
-	// 从viper获取
-	c.mu.RLock()
-	val := c.viper.Get(key)
-	c.mu.RUnlock()
-
-	if val == nil {
+	// 使用完整的 getRaw 查找链（包含嵌套查找、环境变量回退）
+	val, exists := c.getRaw(key)
+	if !exists || val == nil {
 		if len(defaultValue) > 0 {
 			return defaultValue[0]
 		}
@@ -75,6 +73,27 @@ func GetAs[T any](c *Config, key string, defaultValue ...T) T {
 	var zero T
 	c.logger.Warnf("Failed to convert value for key '%s', using zero value", key)
 	return zero
+}
+
+// GetAsWithError 返回转换后的值和错误，便于区分键不存在或转换失败的具体原因
+func GetAsWithError[T any](cfg *Config, key string) (T, error) {
+	var zero T
+
+	if key == "" {
+		return zero, fmt.Errorf("key cannot be empty")
+	}
+
+	raw := cfg.Get(key)
+	if raw == nil {
+		return zero, fmt.Errorf("key %q not found", key)
+	}
+
+	converted, err := convertTo[T](raw)
+	if err != nil {
+		return zero, fmt.Errorf("failed to convert key %q to %T: %w", key, zero, err)
+	}
+
+	return converted, nil
 }
 
 // GetSliceAs 泛型获取切片配置值
@@ -129,21 +148,18 @@ func GetSliceAs[T any](c *Config, key string) []T {
 	return []T{}
 }
 
-// getTypeInfo 获取类型信息（带缓存）
-func getTypeInfo[T any]() typeInfo {
+// getTypeInfo 获取类型信息（带缓存），使用 sync.Map 实现无锁读取
+func getTypeInfo[T any]() *typeInfo {
 	var zero T
 	targetType := reflect.TypeOf(zero)
 
-	// 先尝试从缓存读取
-	typeCacheMu.RLock()
-	if info, exists := typeCache[targetType]; exists {
-		typeCacheMu.RUnlock()
-		return info
+	// 无锁快速路径：从 sync.Map 读取
+	if cached, ok := typeCache.Load(targetType); ok {
+		return cached.(*typeInfo)
 	}
-	typeCacheMu.RUnlock()
 
-	// 缓存未命中，计算类型信息
-	info := typeInfo{
+	// 缓存未命中，计算类型信息并创建预编译转换器
+	info := &typeInfo{
 		kind:       targetType.Kind(),
 		isString:   targetType.Kind() == reflect.String,
 		isInt:      targetType.Kind() >= reflect.Int && targetType.Kind() <= reflect.Int64,
@@ -153,15 +169,123 @@ func getTypeInfo[T any]() typeInfo {
 		isTime:     targetType == reflect.TypeOf(time.Time{}),
 	}
 
-	// 写入缓存
-	typeCacheMu.Lock()
-	typeCache[targetType] = info
-	typeCacheMu.Unlock()
+	// 为每种类型预编译转换函数
+	info.converter = buildConverter[T](info)
+
+	// 存入缓存（并发安全，可能有重复计算但无害）
+	typeCache.Store(targetType, info)
 
 	return info
 }
 
-// convertValue 通用类型转换函数
+// buildConverter 为特定类型构建预编译转换函数
+// 注意：isDuration 和 isTime 必须在 isInt 之前检查，因为 time.Duration 底层是 int64
+func buildConverter[T any](info *typeInfo) converterFunc {
+	switch {
+	case info.isDuration:
+		// Duration 必须最先检查，因为其底层类型是 int64，会导致 isInt=true
+		return func(val any) (any, bool) {
+			switch v := val.(type) {
+			case time.Duration:
+				return v, true
+			case string:
+				if d, err := time.ParseDuration(v); err == nil {
+					return d, true
+				}
+			case int64:
+				return time.Duration(v), true
+			case int:
+				return time.Duration(v), true
+			case float64:
+				return time.Duration(int64(v)), true
+			}
+			// 回退：尝试 cast 库
+			if d, err := cast.ToDurationE(val); err == nil {
+				return d, true
+			}
+			return nil, false
+		}
+	case info.isTime:
+		return func(val any) (any, bool) {
+			if t, ok := val.(time.Time); ok {
+				return t, true
+			}
+			if t, err := cast.ToTimeE(val); err == nil {
+				return t, true
+			}
+			return nil, false
+		}
+	case info.isString:
+		return func(val any) (any, bool) {
+			if str, err := cast.ToStringE(val); err == nil {
+				return str, true
+			}
+			return nil, false
+		}
+	case info.isInt:
+		switch info.kind {
+		case reflect.Int:
+			return func(val any) (any, bool) {
+				if i, err := cast.ToIntE(val); err == nil {
+					return i, true
+				}
+				return nil, false
+			}
+		case reflect.Int32:
+			return func(val any) (any, bool) {
+				if i, err := cast.ToInt32E(val); err == nil {
+					return i, true
+				}
+				return nil, false
+			}
+		case reflect.Int64:
+			return func(val any) (any, bool) {
+				if i, err := cast.ToInt64E(val); err == nil {
+					return i, true
+				}
+				return nil, false
+			}
+		default:
+			return func(val any) (any, bool) {
+				if i, err := cast.ToIntE(val); err == nil {
+					return i, true
+				}
+				return nil, false
+			}
+		}
+	case info.isFloat:
+		switch info.kind {
+		case reflect.Float32:
+			return func(val any) (any, bool) {
+				if f, err := cast.ToFloat32E(val); err == nil {
+					return f, true
+				}
+				return nil, false
+			}
+		default:
+			return func(val any) (any, bool) {
+				if f, err := cast.ToFloat64E(val); err == nil {
+					return f, true
+				}
+				return nil, false
+			}
+		}
+	case info.isBool:
+		return func(val any) (any, bool) {
+			if b, err := cast.ToBoolE(val); err == nil {
+				return b, true
+			}
+			return nil, false
+		}
+	default:
+		// 回退到通用转换
+		return func(val any) (any, bool) {
+			return nil, false
+		}
+	}
+}
+
+// convertValue 通用类型转换函数，使用预编译转换器
 func convertValue[T any](val interface{}) (T, bool) {
 	var zero T
 
@@ -175,81 +299,14 @@ func convertValue[T any](val interface{}) (T, bool) {
 		return zero, false
 	}
 
-	// 获取缓存的类型信息
-	typeInfo := getTypeInfo[T]()
+	// 获取缓存的类型信息（含预编译转换器）
+	info := getTypeInfo[T]()
 
-	// 基于类型信息进行优化转换
-	if typeInfo.isString {
-		if str, err := cast.ToStringE(val); err == nil {
-			if result, ok := any(str).(T); ok {
-				return result, true
-			}
-		}
-	} else if typeInfo.isInt {
-		switch typeInfo.kind {
-		case reflect.Int:
-			if i, err := cast.ToIntE(val); err == nil {
-				if result, ok := any(i).(T); ok {
-					return result, true
-				}
-			}
-		case reflect.Int32:
-			if i, err := cast.ToInt32E(val); err == nil {
-				if result, ok := any(i).(T); ok {
-					return result, true
-				}
-			}
-		case reflect.Int64:
-			if i, err := cast.ToInt64E(val); err == nil {
-				if result, ok := any(i).(T); ok {
-					return result, true
-				}
-			}
-		}
-	} else if typeInfo.isFloat {
-		switch typeInfo.kind {
-		case reflect.Float32:
-			if f, err := cast.ToFloat32E(val); err == nil {
-				if result, ok := any(f).(T); ok {
-					return result, true
-				}
-			}
-		case reflect.Float64:
-			if f, err := cast.ToFloat64E(val); err == nil {
-				if result, ok := any(f).(T); ok {
-					return result, true
-				}
-			}
-		}
-	} else if typeInfo.isBool {
-		if b, err := cast.ToBoolE(val); err == nil {
-			if result, ok := any(b).(T); ok {
-				return result, true
-			}
-		}
-	}
-
-	// 处理time.Duration特殊情况
-	if typeInfo.isDuration {
-		switch v := val.(type) {
-		case string:
-			if d, err := time.ParseDuration(v); err == nil {
-				if result, ok := any(d).(T); ok {
-					return result, true
-				}
-			}
-		case int64:
-			if result, ok := any(time.Duration(v)).(T); ok {
-				return result, true
-			}
-		}
-	}
-
-	// 处理time.Time特殊情况
-	if typeInfo.isTime {
-		if timeVal, err := cast.ToTimeE(val); err == nil {
-			if result, ok := any(timeVal).(T); ok {
-				return result, true
+	// 使用预编译转换器
+	if info.converter != nil {
+		if result, ok := info.converter(val); ok {
+			if converted, ok := result.(T); ok {
+				return converted, true
 			}
 		}
 	}
@@ -257,26 +314,23 @@ func convertValue[T any](val interface{}) (T, bool) {
 	return zero, false
 }
 
+// convertTo 将任意值尝试转换为目标类型，返回错误以便上层处理
+func convertTo[T any](val interface{}) (T, error) {
+	if converted, ok := convertValue[T](val); ok {
+		return converted, nil
+	}
+	var zero T
+	return zero, fmt.Errorf("convert failed")
+}
+
 // MustGetAs 泛型获取配置值，如果不存在或转换失败则panic
 // 适用于必须存在的配置项
 func MustGetAs[T any](c *Config, key string) T {
-	if key == "" {
-		panic("empty configuration key")
+	val, err := GetAsWithError[T](c, key)
+	if err != nil {
+		panic(fmt.Sprintf("MustGetAs failed: %v", err))
 	}
-
-	c.mu.RLock()
-	val := c.viper.Get(key)
-	c.mu.RUnlock()
-
-	if val == nil {
-		panic(fmt.Sprintf("configuration key '%s' not found", key))
-	}
-
-	if converted, ok := convertValue[T](val); ok {
-		return converted
-	}
-
-	panic(fmt.Sprintf("failed to convert value for key '%s' to type %T", key, *new(T)))
+	return val
 }
 
 // GetWithFallback 获取配置值，支持多个fallback键

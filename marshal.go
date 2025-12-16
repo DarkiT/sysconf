@@ -26,15 +26,12 @@ func (c *Config) Marshal(value any, prefix ...string) error {
 		return fmt.Errorf("failed to convert struct to map: %v", err)
 	}
 
-	configMap = deepMerge(c.viper.AllSettings(), configMap)
+	configMap = deepMerge(c.snapshotAllSettings(), configMap)
 
 	if len(prefix) > 0 {
-		c.setMapToViper(strings.Join(prefix, "."), configMap)
-	} else {
-		c.setMapToViper("", configMap)
+		return c.setMapToViper(strings.Join(prefix, "."), configMap)
 	}
-
-	return nil
+	return c.setMapToViper("", configMap)
 }
 
 // setMapToViper 递归设置map到viper中
@@ -42,7 +39,7 @@ func (c *Config) Marshal(value any, prefix ...string) error {
 // 参数:
 //   - prefix: 配置键前缀
 //   - m: 要设置的映射数据
-func (c *Config) setMapToViper(prefix string, m map[string]any) {
+func (c *Config) setMapToViper(prefix string, m map[string]any) error {
 	for key, val := range m {
 		k := key
 		if prefix != "" {
@@ -51,7 +48,9 @@ func (c *Config) setMapToViper(prefix string, m map[string]any) {
 
 		// 先检查值是否为 nil
 		if val == nil {
-			c.Set(k, nil)
+			if err := c.Set(k, nil); err != nil {
+				return err
+			}
 			continue
 		}
 
@@ -59,16 +58,23 @@ func (c *Config) setMapToViper(prefix string, m map[string]any) {
 		if valType != nil && valType.Kind() == reflect.Map {
 			// 如果值是map，递归处理
 			if mapVal, ok := val.(map[string]any); ok {
-				c.setMapToViper(k, mapVal)
+				if err := c.setMapToViper(k, mapVal); err != nil {
+					return err
+				}
 			} else {
 				// 类型断言失败，直接设置值
-				c.Set(k, val)
+				if err := c.Set(k, val); err != nil {
+					return err
+				}
 			}
 		} else {
 			// 直接设置值
-			c.Set(k, val)
+			if err := c.Set(k, val); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
 }
 
 // deepMerge 深度合并两个 map

@@ -64,8 +64,8 @@ func TestMultiplePFlagSets(t *testing.T) {
 	dbFlags.String("dsn", "postgres://", "Database DSN")
 
 	// 解析不同的参数
-	serverFlags.Parse([]string{"--bind=127.0.0.1"})
-	dbFlags.Parse([]string{"--dsn=mysql://"})
+	assert.NoError(t, serverFlags.Parse([]string{"--bind=127.0.0.1"}))
+	assert.NoError(t, dbFlags.Parse([]string{"--dsn=mysql://"}))
 
 	cfg, err := New(
 		WithBindPFlags(serverFlags, dbFlags),
@@ -75,6 +75,7 @@ app:
 `),
 	)
 	assert.NoError(t, err)
+	t.Cleanup(func() { _ = cfg.Close() })
 
 	// 验证来自不同FlagSet的参数都生效
 	assert.Equal(t, "127.0.0.1", cfg.GetString("bind"))

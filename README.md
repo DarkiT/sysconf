@@ -134,10 +134,20 @@ cfg.Set("database.host", "localhost") // ✅ 有效主机名
 host := GetAs[string](cfg, "database.host", "localhost")
 port := GetAs[int](cfg, "database.port", 5432)
 timeout := GetAs[time.Duration](cfg, "timeout", 30*time.Second)
+apiKey := MustGetAs[string](cfg, "api.secret_key") // 缺失或转换失败时 panic
 
 // 泛型切片支持
 features := GetSliceAs[string](cfg, "server.features")
 ports := GetSliceAs[int](cfg, "server.ports")
+```
+
+#### MustGetAs[T] - 强制获取（新增）
+
+获取配置值并转换为指定类型，失败时 panic。适用于强制必填配置项。
+
+```go
+apiKey := sysconf.MustGetAs[string](cfg, "api.secret_key")  // 缺失或转换失败时 panic
+port := sysconf.MustGetAs[int](cfg, "server.port")
 ```
 
 ### 结构体映射

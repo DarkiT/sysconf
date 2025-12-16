@@ -11,7 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// readConfigFile 读取配置文件（支持解密）
+// readConfigFile 读取配置文件（支持解密）- 线程安全版本
 func (c *Config) readConfigFile() error {
 	if c.name == "" {
 		return nil // 内存模式，不需要读取文件
@@ -24,13 +24,13 @@ func (c *Config) readConfigFile() error {
 		return err // 直接返回原始错误，让调用者处理
 	}
 
-	// 读取文件内容
+	// 读取文件内容（锁外执行 I/O）
 	data, err := os.ReadFile(configFile)
 	if err != nil {
 		return fmt.Errorf("read config file: %w", err)
 	}
 
-	// 如果启用了加密，尝试解密
+	// 如果启用了加密，尝试解密（锁外执行解密）
 	if c.cryptoOptions.Enabled && c.crypto != nil {
 		if c.crypto.IsEncrypted(data) {
 			c.logger.Debugf("Decrypting config file")
@@ -45,7 +45,51 @@ func (c *Config) readConfigFile() error {
 		}
 	}
 
-	// 使用 viper 解析配置内容
+	// 使用 viper 解析配置内容（需要锁保护，锁顺序：cacheBuildMu -> writeMu）
+	c.cacheBuildMu.Lock()
+	c.writeMu.Lock()
+	err = c.viper.ReadConfig(strings.NewReader(string(data)))
+	c.writeMu.Unlock()
+	c.cacheBuildMu.Unlock()
+
+	if err != nil {
+		return fmt.Errorf("parse config content: %w", err)
+	}
+
+	return nil
+}
+
+// readConfigFileUnsafe 读取配置文件 - 调用者已持锁版本（供 initialize 等内部方法使用）
+func (c *Config) readConfigFileUnsafe() error {
+	if c.name == "" {
+		return nil
+	}
+
+	configFile := filepath.Join(c.path, c.name+"."+c.mode)
+
+	if _, err := os.Stat(configFile); os.IsNotExist(err) {
+		return err
+	}
+
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		return fmt.Errorf("read config file: %w", err)
+	}
+
+	if c.cryptoOptions.Enabled && c.crypto != nil {
+		if c.crypto.IsEncrypted(data) {
+			c.logger.Debugf("Decrypting config file")
+			decryptedData, err := c.crypto.Decrypt(data)
+			if err != nil {
+				return fmt.Errorf("decrypt config file: %w", err)
+			}
+			data = decryptedData
+			c.logger.Infof("Config file decrypted successfully")
+		} else {
+			c.logger.Debugf("Config file is not encrypted")
+		}
+	}
+
 	if err := c.viper.ReadConfig(strings.NewReader(string(data))); err != nil {
 		return fmt.Errorf("parse config content: %w", err)
 	}
@@ -94,7 +138,7 @@ func (c *Config) writeConfigFile() error {
 
 // marshalConfig 将viper配置序列化为指定格式的字节数组
 func (c *Config) marshalConfig() ([]byte, error) {
-	allSettings := c.viper.AllSettings()
+	allSettings := c.snapshotAllSettings()
 
 	switch c.mode {
 	case "yaml", "yml":
@@ -104,6 +148,66 @@ func (c *Config) marshalConfig() ([]byte, error) {
 	case "ini":
 		// 对于INI格式，我们需要特殊处理
 		return c.marshalToINI(allSettings)
+	default:
+		return nil, fmt.Errorf("unsupported config format: %s", c.mode)
+	}
+}
+
+// writeConfigFileWithData 使用传入的配置数据写入文件（支持加密）
+// 调用者需确保 settingsData 已在锁外安全获取，避免自死锁
+func (c *Config) writeConfigFileWithData(settingsData map[string]any) error {
+	if settingsData == nil {
+		return fmt.Errorf("settingsData cannot be nil")
+	}
+
+	if c.name == "" {
+		return nil // 内存模式，不需要写入文件
+	}
+
+	configFile := filepath.Join(c.path, c.name+"."+c.mode)
+
+	// 确保目录存在
+	if err := os.MkdirAll(filepath.Dir(configFile), 0o755); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+
+	// 使用传入的数据进行序列化，避免再次调用 snapshotAllSettings()
+	data, err := c.marshalConfigWithData(settingsData)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+
+	// 如果启用了加密，加密数据
+	if c.cryptoOptions.Enabled && c.crypto != nil {
+		c.logger.Debugf("Encrypting config file")
+		encryptedData, err := c.crypto.Encrypt(data)
+		if err != nil {
+			return fmt.Errorf("encrypt config: %w", err)
+		}
+		data = encryptedData
+		c.logger.Infof("Config file encrypted successfully")
+	}
+
+	// 写入文件
+	if err := os.WriteFile(configFile, data, 0o644); err != nil {
+		return fmt.Errorf("write config file: %w", err)
+	}
+
+	c.logger.Infof("Config file written: %s", configFile)
+	return nil
+}
+
+// marshalConfigWithData 使用传入的配置数据序列化为指定格式的字节数组
+// 不调用 snapshotAllSettings()，由调用者提供数据以避免锁竞争
+func (c *Config) marshalConfigWithData(settings map[string]any) ([]byte, error) {
+	switch c.mode {
+	case "yaml", "yml":
+		return yaml.Marshal(settings)
+	case "json":
+		return json.MarshalIndent(settings, "", "  ")
+	case "ini":
+		// 对于INI格式，我们需要特殊处理
+		return c.marshalToINI(settings)
 	default:
 		return nil, fmt.Errorf("unsupported config format: %s", c.mode)
 	}

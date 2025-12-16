@@ -1,12 +1,26 @@
 package sysconf
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 )
+
+// limitValidator 简单验证器：限制 number 不得超过 10
+type limitValidator struct{}
+
+func (limitValidator) Validate(m map[string]any) error {
+	if v, ok := m["number"].(int); ok && v > 10 {
+		return fmt.Errorf("number too large")
+	}
+	return nil
+}
+
+func (limitValidator) GetName() string { return "default rollback validator" }
 
 func TestSet(t *testing.T) {
 	// 创建临时目录用于测试
@@ -123,6 +137,78 @@ func TestSet(t *testing.T) {
 			t.FailNow()
 		}
 		assert.Equal(t, "延迟写入值", newConfig.GetString("delayed_key"))
+	})
+
+	// 测试: 验证失败时保持原值
+	t.Run("验证失败回滚原值", func(t *testing.T) {
+		cfg, err := New(
+			WithContent("number: 5"),
+			WithValidator(limitValidator{}),
+		)
+		if !assert.NoError(t, err, "回滚测试初始化失败") {
+			t.FailNow()
+		}
+
+		assert.Equal(t, 5, cfg.GetInt("number"))
+
+		// 非法值应触发错误且保持原值不变
+		err = cfg.Set("number", 20)
+		assert.Error(t, err)
+		assert.Equal(t, 5, cfg.GetInt("number"), "验证失败后原值应被保留")
+	})
+
+	// 测试: 写入失败回滚
+	t.Run("写入失败自动回滚", func(t *testing.T) {
+		roDir, err := os.MkdirTemp("", "deny_write")
+		assert.NoError(t, err)
+		defer os.RemoveAll(roDir)
+
+		configFile := filepath.Join(roDir, "rollback_write.yaml")
+		assert.NoError(t, os.WriteFile(configFile, []byte("number: 1\n"), 0o400)) // 只读文件
+
+		cfg, err := New(
+			WithPath(roDir),
+			WithName("rollback_write"),
+			WithMode("yaml"),
+		)
+		if !assert.NoError(t, err) {
+			t.FailNow()
+		}
+
+		// 强制走加密写入路径并制造序列化错误
+		cfg.cryptoOptions.Enabled = true
+		cfg.mode = "invalid" // marshalConfig 不支持，写入应失败
+
+		assert.Equal(t, 1, cfg.GetInt("number"))
+
+		err = cfg.Set("number", 2)
+		assert.Error(t, err)
+		assert.Equal(t, 1, cfg.GetInt("number"), "写入失败后应回滚为旧值")
+	})
+
+	// 测试: 并发 Set 保持一致性
+	t.Run("并发设置保持一致性", func(t *testing.T) {
+		cfg, err := New(
+			WithContent("a: 1\nb: 1"),
+		)
+		if !assert.NoError(t, err) {
+			t.FailNow()
+		}
+
+		done := make(chan struct{})
+		for i := 0; i < 10; i++ {
+			go func(i int) {
+				_ = cfg.Set(fmt.Sprintf("a.%d", i), i)
+				done <- struct{}{}
+			}(i)
+		}
+
+		for i := 0; i < 10; i++ {
+			<-done
+		}
+
+		// 确认不会 panic 且数据可读
+		assert.True(t, cfg.IsSet("a.0"))
 	})
 }
 

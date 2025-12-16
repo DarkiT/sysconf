@@ -384,9 +384,13 @@ func ValidateStruct(obj any) error {
 		field := v.Field(i)
 		fieldType := t.Field(i)
 
-		// 检查当前字段是否必填
-		required := fieldType.Tag.Get("required")
-		if required == "true" {
+		// 检查当前字段是否必填（支持 required:"true" / required:"required" / validate:"required"）
+		if requiredTag := fieldType.Tag.Get("required"); requiredTag == "true" || requiredTag == "required" {
+			if IsZero(field) {
+				return fmt.Errorf("field %s is required", fieldType.Name)
+			}
+		}
+		if validateTag := fieldType.Tag.Get("validate"); strings.Contains(validateTag, "required") {
 			if IsZero(field) {
 				return fmt.Errorf("field %s is required", fieldType.Name)
 			}

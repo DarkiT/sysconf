@@ -27,6 +27,7 @@ var (
 
 	ErrInvalidKey       = errors.New("invalid configuration key")
 	ErrInitGlobalConfig = errors.New("failed to initialize global config")
+	ErrAlreadyClosed    = errors.New("config already closed")
 )
 
 const (
@@ -73,6 +74,11 @@ type Config struct {
 	// 并发控制
 	mu sync.RWMutex // 保护元数据和写操作
 
+	// 资源生命周期控制
+	stopChan chan struct{}  // 停止信号
+	wg       sync.WaitGroup // 等待后台 goroutine 退出
+	closed   atomic.Bool    // 防止重复关闭
+
 	// 基本配置
 	logger  Logger // 日志记录器
 	path    string // 配置文件路径
@@ -98,7 +104,7 @@ type Config struct {
 	viper *viper.Viper
 
 	// 高性能缓存 - 简化版本，无复杂版本控制
-	cacheEnabled bool // 是否启用缓存
+	cacheEnabled atomic.Bool // 是否启用缓存（原子操作保证并发安全）
 	// 缓存调度参数
 	cacheWarmupDelay  time.Duration
 	cacheRebuildDelay time.Duration
@@ -107,7 +113,15 @@ type Config struct {
 	readCache    atomic.Value // 只读缓存，存储map[string]any
 	cacheVersion int64        // 缓存版本号，用于检测是否需要更新
 	cacheMu      sync.Mutex   // 缓存更新互斥锁
+	cacheBuildMu sync.Mutex   // 缓存构建互斥锁，防止并发 updateReadCache 访问 viper map
 	writeMu      sync.Mutex   // 写入操作的互斥锁（来自setter.go）
+}
+
+// 快照结构，用于在写入失败时回滚
+type snapshot struct {
+	data      map[string]any
+	readCache map[string]any
+	timestamp time.Time
 }
 
 // Option 配置选项
@@ -125,11 +139,14 @@ func New(opts ...Option) (*Config, error) {
 		path:              workPathValue,
 		mode:              "yaml",
 		logger:            &NopLogger{}, // 默认空日志记录器
-		cacheEnabled:      true,         // 默认启用缓存
 		writeDelay:        defaultWriteDelay,
 		cacheWarmupDelay:  defaultCacheWarmupDelay,
 		cacheRebuildDelay: defaultCacheRebuildDelay,
+		stopChan:          make(chan struct{}),
 	}
+
+	// 默认启用缓存
+	c.cacheEnabled.Store(true)
 
 	// 初始化原子数据存储
 	c.data.Store(make(map[string]any))
@@ -182,7 +199,21 @@ func (c *Config) WatchWithContext(ctx context.Context, callbacks ...func()) cont
 		ctx = context.Background()
 	}
 
+	if c.stopChan == nil {
+		c.stopChan = make(chan struct{})
+	}
+
 	watchCtx, cancel := context.WithCancel(ctx)
+	// 当 stopChan 或 ctx 结束时，触发 cancel 并标记退出
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		select {
+		case <-watchCtx.Done():
+		case <-c.stopChan:
+			cancel()
+		}
+	}()
 
 	c.viper.OnConfigChange(func(e fsnotify.Event) {
 		if e.Op&fsnotify.Write == 0 {
@@ -191,6 +222,8 @@ func (c *Config) WatchWithContext(ctx context.Context, callbacks ...func()) cont
 
 		select {
 		case <-watchCtx.Done():
+			return
+		case <-c.stopChan:
 			return
 		default:
 		}
@@ -223,7 +256,10 @@ func (c *Config) WatchWithContext(ctx context.Context, callbacks ...func()) cont
 	c.viper.WatchConfig()
 	c.logger.Infof("Config file watching started")
 
-	return cancel
+	return func() {
+		cancel()
+		c.wg.Wait()
+	}
 }
 
 // reloadConfigLocked 在检测到文件变更时重新加载配置文件
@@ -278,6 +314,7 @@ func (c *Config) GetValidators() []ConfigValidator {
 	return validators
 }
 
+// createDefaultConfig 创建默认配置 - 线程安全版本（用于运行时调用）
 func (c *Config) createDefaultConfig() error {
 	if c.content == "" {
 		return nil
@@ -332,13 +369,82 @@ func (c *Config) createDefaultConfig() error {
 
 	// 读取刚创建的配置文件
 	if c.cryptoOptions.Enabled {
-		// 如果启用了加密，使用自定义读取方法
+		// 如果启用了加密，使用自定义读取方法（内部已有锁保护）
 		if err := c.readConfigFile(); err != nil {
 			c.logger.Errorf("Failed to read new encrypted config: %v", err)
 			return fmt.Errorf("read new encrypted config: %w", err)
 		}
 	} else {
-		// 没有启用加密时，使用viper标准方法
+		// 没有启用加密时，使用viper标准方法（需要锁保护）
+		c.cacheBuildMu.Lock()
+		c.writeMu.Lock()
+		err := c.viper.ReadInConfig()
+		c.writeMu.Unlock()
+		c.cacheBuildMu.Unlock()
+		if err != nil {
+			c.logger.Errorf("Failed to read new config: %v", err)
+			return fmt.Errorf("read new config: %w", err)
+		}
+	}
+
+	c.logger.Infof("Default config file created successfully")
+	return nil
+}
+
+// createDefaultConfigUnsafe 创建默认配置 - 调用者已持锁版本（供 initialize 等内部方法使用）
+func (c *Config) createDefaultConfigUnsafe() error {
+	if c.content == "" {
+		return nil
+	}
+
+	if c.name == "" {
+		c.logger.Infof("Loading configuration in memory-only mode (no file name specified)")
+		return c.loadContentToMemoryUnsafe()
+	}
+
+	configFile := filepath.Join(c.path, c.name+"."+c.mode)
+
+	if err := os.MkdirAll(filepath.Dir(configFile), 0o755); err != nil {
+		c.logger.Errorf("Failed to create config directory: %v", err)
+		return fmt.Errorf("create config directory: %w", err)
+	}
+
+	if err := c.checkDirectoryPermissions(filepath.Dir(configFile)); err != nil {
+		c.logger.Errorf("Config directory permission check failed: %v", err)
+		return fmt.Errorf("config directory permission: %w", err)
+	}
+
+	c.logger.Infof("Creating default config file: %s", configFile)
+
+	if err := c.createBackupIfExists(configFile); err != nil {
+		c.logger.Warnf("Failed to create backup: %v", err)
+	}
+
+	data := []byte(c.content)
+
+	if c.cryptoOptions.Enabled && c.crypto != nil {
+		c.logger.Debugf("Encrypting default config content")
+		encryptedData, err := c.crypto.Encrypt(data)
+		if err != nil {
+			c.logger.Errorf("Failed to encrypt default config: %v", err)
+			return fmt.Errorf("encrypt default config: %w", err)
+		}
+		data = encryptedData
+		c.logger.Infof("Default config content encrypted successfully")
+	}
+
+	if err := os.WriteFile(configFile, data, 0o644); err != nil {
+		c.logger.Errorf("Failed to write default config: %v", err)
+		return fmt.Errorf("write default config: %w", err)
+	}
+
+	// 读取刚创建的配置文件（无锁版本）
+	if c.cryptoOptions.Enabled {
+		if err := c.readConfigFileUnsafe(); err != nil {
+			c.logger.Errorf("Failed to read new encrypted config: %v", err)
+			return fmt.Errorf("read new encrypted config: %w", err)
+		}
+	} else {
 		if err := c.viper.ReadInConfig(); err != nil {
 			c.logger.Errorf("Failed to read new config: %v", err)
 			return fmt.Errorf("read new config: %w", err)
@@ -349,12 +455,16 @@ func (c *Config) createDefaultConfig() error {
 	return nil
 }
 
-// 新增：将配置内容加载到内存中（不创建物理文件）
+// 新增：将配置内容加载到内存中（不创建物理文件）- 线程安全版本
 func (c *Config) loadContentToMemory() error {
 	c.logger.Debugf("Loading config content to memory")
 
 	// 使用bytes.NewReader创建一个读取器
 	reader := strings.NewReader(c.content)
+
+	// viper 操作需要锁保护（锁顺序：cacheBuildMu -> writeMu）
+	c.cacheBuildMu.Lock()
+	c.writeMu.Lock()
 
 	// 设置配置类型，确保viper知道如何解析内容
 	if c.mode != "" {
@@ -362,6 +472,30 @@ func (c *Config) loadContentToMemory() error {
 	}
 
 	// 从内存中读取配置
+	err := c.viper.ReadConfig(reader)
+
+	c.writeMu.Unlock()
+	c.cacheBuildMu.Unlock()
+
+	if err != nil {
+		c.logger.Errorf("Failed to read config from memory: %v", err)
+		return fmt.Errorf("read config from memory: %w", err)
+	}
+
+	c.logger.Infof("Configuration loaded successfully in memory-only mode")
+	return nil
+}
+
+// loadContentToMemoryUnsafe 将配置加载到内存 - 调用者已持锁版本（供 initialize 等内部方法使用）
+func (c *Config) loadContentToMemoryUnsafe() error {
+	c.logger.Debugf("Loading config content to memory")
+
+	reader := strings.NewReader(c.content)
+
+	if c.mode != "" {
+		c.viper.SetConfigType(c.mode)
+	}
+
 	if err := c.viper.ReadConfig(reader); err != nil {
 		c.logger.Errorf("Failed to read config from memory: %v", err)
 		return fmt.Errorf("read config from memory: %w", err)
@@ -422,6 +556,10 @@ func (c *Config) createBackupIfExists(configFile string) error {
 func (c *Config) initialize() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if c.stopChan == nil {
+		c.stopChan = make(chan struct{})
+	}
 
 	c.pendingWrites = false
 	c.envKeyCache = sync.Map{}
@@ -485,6 +623,31 @@ func (c *Config) initialize() error {
 	c.enableReadCache()
 
 	return nil
+}
+
+// Close 停止所有后台资源，确保幂等与超时保护
+func (c *Config) Close() error {
+	if !c.closed.CompareAndSwap(false, true) {
+		return ErrAlreadyClosed
+	}
+
+	// 关闭停止通道，通知所有监听者退出
+	if c.stopChan != nil {
+		close(c.stopChan)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		c.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("timeout waiting for goroutines to exit")
+	}
 }
 
 func (c *Config) initializeEnv() error {
@@ -586,7 +749,10 @@ func (c *Config) bindSmartCaseEnvVars() {
 
 	// 第二阶段：批量绑定环境变量
 	for _, pair := range matchingVars {
-		c.viper.BindEnv(pair.configKey, pair.key)
+		if err := c.viper.BindEnv(pair.configKey, pair.key); err != nil {
+			c.logger.Warnf("Failed to bind env var %s -> %s: %v", pair.key, pair.configKey, err)
+			continue
+		}
 		c.logger.Debugf("Bound env var: %s -> %s", pair.key, pair.configKey)
 	}
 
@@ -643,9 +809,10 @@ func (c *Config) initializeCrypto() error {
 
 func (c *Config) loadOrCreateConfig() error {
 	// 纯内存配置模式：如果没有设置name，直接创建默认配置到内存
+	// 注意：此方法在 initialize() 中被调用，此时 mu 已被持有，使用 Unsafe 版本避免死锁
 	if c.name == "" {
 		c.logger.Infof("Memory-only mode: skipping file operations")
-		if err := c.createDefaultConfig(); err != nil {
+		if err := c.createDefaultConfigUnsafe(); err != nil {
 			return c.wrapError(err, "创建内存配置")
 		}
 		return nil
@@ -653,12 +820,12 @@ func (c *Config) loadOrCreateConfig() error {
 
 	// 如果启用了加密，使用自定义的读取方法
 	if c.cryptoOptions.Enabled {
-		err := c.readConfigFile()
+		err := c.readConfigFileUnsafe()
 		if err != nil {
 			if os.IsNotExist(err) {
 				c.logger.Infof("Config file not found, creating default config")
 				// 配置文件不存在，创建默认配置
-				if err := c.createDefaultConfig(); err != nil {
+				if err := c.createDefaultConfigUnsafe(); err != nil {
 					return c.wrapError(err, "创建默认加密配置")
 				}
 				return nil
@@ -670,14 +837,14 @@ func (c *Config) loadOrCreateConfig() error {
 		return nil
 	}
 
-	// 没有启用加密时，使用viper的标准读取方法
+	// 没有启用加密时，使用viper的标准读取方法（此时已在 initialize 锁内，无需额外锁）
 	err := c.viper.ReadInConfig()
 	if err != nil {
 		var configFileNotFoundError viper.ConfigFileNotFoundError
 		if errors.As(err, &configFileNotFoundError) {
 			c.logger.Infof("Config file not found, creating default config")
 			// 配置文件不存在，创建默认配置
-			if err := c.createDefaultConfig(); err != nil {
+			if err := c.createDefaultConfigUnsafe(); err != nil {
 				return c.wrapError(err, "创建默认配置")
 			}
 			return nil
@@ -807,6 +974,54 @@ func (c *Config) reinitialize() error {
 	c.syncFromViperUnsafe()
 
 	return nil
+}
+
+// createSnapshot 创建当前配置与缓存的深拷贝快照
+func (c *Config) createSnapshot() *snapshot {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	currentData := c.loadData()
+	readCache := c.loadReadCache()
+
+	dataClone := deepCloneMap(currentData)
+	cacheClone := deepCloneMap(readCache)
+
+	return &snapshot{
+		data:      dataClone,
+		readCache: cacheClone,
+		timestamp: time.Now(),
+	}
+}
+
+// restoreSnapshot 恢复快照，回滚内存与缓存状态
+func (c *Config) restoreSnapshot(snap *snapshot) {
+	if snap == nil {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.data.Store(deepCloneMap(snap.data))
+	c.readCache.Store(deepCloneMap(snap.readCache))
+}
+
+// deepCloneMap 对 map[string]any 进行深拷贝，避免并发场景下共享可变引用。
+func deepCloneMap(src map[string]any) map[string]any {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]any, len(src))
+	for k, v := range src {
+		dst[k] = deepCloneValue(v)
+	}
+	return dst
+}
+
+// deepCloneValue 深拷贝任意值，委托给 sanitizeValue 实现
+func deepCloneValue(v any) any {
+	return sanitizeValue(v)
 }
 
 // ============================================================================
@@ -1095,41 +1310,6 @@ func (c *Config) setNestedValue(m map[string]any, key string, value any) {
 	current[parts[len(parts)-1]] = value
 }
 
-// setRaw 原子性设置配置值
-func (c *Config) setRaw(key string, value any) error {
-	if key == "" {
-		return ErrInvalidKey
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// 获取当前数据的副本
-	currentData := c.loadData()
-	newData := make(map[string]any, len(currentData)+1)
-
-	// 移除与当前键相关的旧数据，避免残留脏数据
-	prefix := key + "."
-	for k, v := range currentData {
-		if k == key || strings.HasPrefix(k, prefix) {
-			continue
-		}
-		newData[k] = v
-	}
-
-	// 设置新值并自动展开嵌套结构
-	c.mergeValueIntoData(newData, key, value)
-
-	// 原子性存储
-	c.storeData(newData)
-
-	// 同时同步到viper，确保嵌套查询正常工作
-	c.viper.Set(key, value)
-
-	c.logger.Debugf("Set config value: %s", key)
-	return nil
-}
-
 // mergeValueIntoData 将值写入扁平化数据结构
 func (c *Config) mergeValueIntoData(target map[string]any, key string, value any) {
 	sanitized := sanitizeValue(value)
@@ -1228,10 +1408,21 @@ func (c *Config) Keys() []string {
 
 // AllSettings 获取所有配置（返回副本以保证线程安全）
 func (c *Config) AllSettings() map[string]any {
-	data := c.loadData()
-	result := make(map[string]any)
-	for k, v := range data {
-		result[k] = v
+	return c.snapshotAllSettings()
+}
+
+// snapshotAllSettings 在统一锁顺序下获取 viper 配置快照，避免并发读写竞态。
+// 锁顺序：cacheBuildMu -> mu.RLock -> writeMu
+func (c *Config) snapshotAllSettings() map[string]any {
+	if c == nil {
+		return nil
 	}
-	return result
+	c.cacheBuildMu.Lock()
+	c.mu.RLock()
+	c.writeMu.Lock()
+	settings := deepCloneMap(c.viper.AllSettings())
+	c.writeMu.Unlock()
+	c.mu.RUnlock()
+	c.cacheBuildMu.Unlock()
+	return settings
 }

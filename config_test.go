@@ -1,13 +1,18 @@
 package sysconf
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // 测试配置结构体
@@ -140,7 +145,10 @@ server:
 	t.Run("环境变量", func(t *testing.T) {
 		// t.Skip("环境变量测试可能依赖文件系统或特定环境，暂时跳过")
 
-		os.Setenv("APP_DATABASE_HOST", "envhost.example.com")
+		if err := os.Setenv("APP_DATABASE_HOST", "envhost.example.com"); err != nil {
+			t.Fatalf("Setenv failed: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Unsetenv("APP_DATABASE_HOST") })
 
 		// 创建新的配置实例以避免之前设置的值干扰
 		envCfg, err := New(
@@ -150,16 +158,79 @@ server:
 		if err != nil {
 			t.Fatalf("创建环境变量测试配置失败: %v", err)
 		}
+		t.Cleanup(func() { _ = envCfg.Close() })
 
 		// 设置环境变量前缀以加载环境变量
-		envCfg.SetEnvPrefix("APP")
+		if err := envCfg.SetEnvPrefix("APP"); err != nil {
+			t.Fatalf("SetEnvPrefix failed: %v", err)
+		}
 
 		if host := envCfg.GetString("database.host"); host != "envhost.example.com" {
 			t.Errorf("环境变量未生效, 期望 envhost.example.com, 获得 %s", host)
 		}
 
-		os.Unsetenv("APP_DATABASE_HOST")
+		// 覆盖 deriveEnvKeys / titleCaseEnv / reconstructNestedStructure
+		envCfg.envOptions = EnvOptions{Enabled: true, Prefix: "My_App", SmartCase: true}
+		keys := envCfg.deriveEnvKeys(envCfg.envOptions, "database.host")
+		if len(keys) == 0 {
+			t.Fatalf("deriveEnvKeys 应生成候选键")
+		}
+		if got := titleCaseEnv("my_app"); got != "My_App" {
+			t.Fatalf("titleCaseEnv 转换失败, got %s", got)
+		}
+		nested := envCfg.reconstructNestedStructure(map[string]any{
+			"database.host": "h",
+			"database.port": 1,
+			"server.debug":  true,
+		})
+		if db, ok := nested["database"].(map[string]any); !ok || db["host"] != "h" {
+			t.Fatalf("reconstructNestedStructure 未正确嵌套 database.host")
+		}
 	})
+}
+
+// 资源清理测试
+func TestConfigClose(t *testing.T) {
+	// 使用短延迟以加快测试
+	cfg, err := New(
+		WithMode("yaml"),
+		WithName("close_test"),
+		WithWriteFlushDelay(20*time.Millisecond),
+	)
+	require.NoError(t, err)
+
+	// 启动监听与写入，触发 goroutine
+	cancel := cfg.WatchWithContext(context.Background())
+	defer cancel()
+	require.NoError(t, cfg.Set("close.test", "value"))
+
+	// 记录 goroutine 数量基线
+	before := runtime.NumGoroutine()
+
+	// 关闭配置，等待后台退出
+	require.NoError(t, cfg.Close())
+
+	// Close 再次调用返回 ErrAlreadyClosed
+	err = cfg.Close()
+	require.ErrorIs(t, err, ErrAlreadyClosed)
+
+	// 并发关闭也应返回 ErrAlreadyClosed
+	var wg sync.WaitGroup
+	const parallel = 5
+	wg.Add(parallel)
+	for i := 0; i < parallel; i++ {
+		go func() {
+			defer wg.Done()
+			_ = cfg.Close()
+		}()
+	}
+	wg.Wait()
+
+	// goroutine 数量应在合理范围内（允许波动）
+	after := runtime.NumGoroutine()
+	if after > before+5 {
+		t.Fatalf("后台 goroutine 可能未退出: before=%d after=%d", before, after)
+	}
 }
 
 // 测试全局配置实例
@@ -231,9 +302,8 @@ required:
 
 		var conf ConfigWithRequired
 		err = cfg.Unmarshal(&conf)
-		if err == nil || !strings.Contains(err.Error(), "required") {
-			t.Error("期望获得必填字段错误,但是没有")
-		}
+		require.Error(t, err, "期望获得必填字段错误,但是没有")
+		require.Contains(t, err.Error(), "required")
 	})
 
 	// 测试默认值处理
@@ -422,8 +492,10 @@ database:
   port: 5432
 `
 		// 设置环境变量
-		os.Setenv("TEST_DATABASE_HOST", "env_host")
-		defer os.Unsetenv("TEST_DATABASE_HOST")
+		if err := os.Setenv("TEST_DATABASE_HOST", "env_host"); err != nil {
+			t.Fatalf("Setenv failed: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Unsetenv("TEST_DATABASE_HOST") })
 
 		cfg, err := New(
 			WithPath(tmpDir),
@@ -438,6 +510,7 @@ database:
 		if err != nil {
 			t.Fatalf("创建配置实例失败: %v", err)
 		}
+		t.Cleanup(func() { _ = cfg.Close() })
 
 		if host := cfg.GetString("database.host"); host != "env_host" {
 			t.Errorf("环境变量优先级错误,期望 env_host,获得 %s", host)
@@ -445,8 +518,10 @@ database:
 	})
 
 	t.Run("环境变量前缀处理", func(t *testing.T) {
-		os.Setenv("MY_APP_VALUE", "test_value")
-		defer os.Unsetenv("MY_APP_VALUE")
+		if err := os.Setenv("MY_APP_VALUE", "test_value"); err != nil {
+			t.Fatalf("Setenv failed: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Unsetenv("MY_APP_VALUE") })
 
 		cfg, err := New(
 			WithPath(tmpDir),
@@ -460,6 +535,7 @@ database:
 		if err != nil {
 			t.Fatalf("创建配置实例失败: %v", err)
 		}
+		t.Cleanup(func() { _ = cfg.Close() })
 
 		if val := cfg.GetString("value"); val != "test_value" {
 			t.Errorf("环境变量前缀处理错误,期望 test_value,获得 %s", val)
@@ -478,16 +554,18 @@ database:
 		}
 
 		for _, envVar := range envVarsToClean {
-			os.Unsetenv(envVar)
+			_ = os.Unsetenv(envVar)
 		}
 
 		// 测试小写环境变量
-		os.Setenv("smart_database_host", "lowercase_host")
-		os.Setenv("smart_server_port", "9090")
-		defer func() {
-			os.Unsetenv("smart_database_host")
-			os.Unsetenv("smart_server_port")
-		}()
+		if err := os.Setenv("smart_database_host", "lowercase_host"); err != nil {
+			t.Fatalf("Setenv failed: %v", err)
+		}
+		if err := os.Setenv("smart_server_port", "9090"); err != nil {
+			t.Fatalf("Setenv failed: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Unsetenv("smart_database_host") })
+		t.Cleanup(func() { _ = os.Unsetenv("smart_server_port") })
 
 		// 使用便利函数WithEnv（默认启用SmartCase）
 		cfg, err := New(
@@ -499,6 +577,7 @@ database:
 		if err != nil {
 			t.Fatalf("创建配置实例失败: %v", err)
 		}
+		t.Cleanup(func() { _ = cfg.Close() })
 
 		// 验证小写环境变量能被正确识别
 		if host := cfg.GetString("database.host"); host != "lowercase_host" {
@@ -513,8 +592,10 @@ database:
 	// 🆕 测试禁用智能大小写匹配
 	t.Run("禁用智能大小写匹配", func(t *testing.T) {
 		// 只设置小写环境变量
-		os.Setenv("strict_test_value", "should_not_work")
-		defer os.Unsetenv("strict_test_value")
+		if err := os.Setenv("strict_test_value", "should_not_work"); err != nil {
+			t.Fatalf("Setenv failed: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Unsetenv("strict_test_value") })
 
 		cfg, err := New(
 			WithPath(tmpDir),
@@ -525,6 +606,7 @@ database:
 		if err != nil {
 			t.Fatalf("创建配置实例失败: %v", err)
 		}
+		t.Cleanup(func() { _ = cfg.Close() })
 
 		// 小写环境变量应该不被识别（因为禁用了智能匹配）
 		if val := cfg.GetString("test.value"); val == "should_not_work" {
