@@ -1,83 +1,103 @@
 # Sysconf 基准测试报告
 
-生成时间: 2025-07-02T16:29:37+08:00
+> 生成时间: 2025-12-16 21:49:25
 
 ## 系统信息
 
-- Go版本: go1.24.2
-- 操作系统: linux
-- 架构: amd64
-- CPU核心数: 383
+| 项目 | 值 |
+|------|----|
+| Go版本 | go1.25.5 X:jsonv2,greenteagc |
+| 操作系统 | linux |
+| 架构 | amd64 |
+| CPU核心数 | 8 |
+| GOMAXPROCS | 8 |
 
-## 基准测试结果
+## 性能等级说明
 
-| 测试名称 | 操作次数 | ns/op | allocs/op | bytes/op | 描述 |
-|----------|----------|-------|-----------|----------|------|
-| ConfigInit_基础配置 | 15811 | 72838 | 308 | 18102 | 最小配置初始化 |
-| ConfigInit_环境变量配置 | 8175 | 169663 | 2146 | 100551 | 包含环境变量的配置 |
-| ConfigInit_完整配置 | 8088 | 177191 | 2146 | 104659 | 包含所有功能的配置 |
-| EnvBinding_10_vars | 17602 | 70327 | 388 | 29576 | 绑定10个环境变量 |
-| EnvBinding_100_vars | 9664 | 154300 | 2028 | 102368 | 绑定100个环境变量 |
-| EnvBinding_500_vars | 1821 | 619531 | 9226 | 555858 | 绑定500个环境变量 |
-| EnvBinding_1000_vars | 999 | 1167696 | 18231 | 1109166 | 绑定1000个环境变量 |
-| EnvBinding_5000_vars | 187 | 6084532 | 90149 | 4889396 | 绑定5000个环境变量 |
-| ConfigGet_简单键 | 2201272 | 569 | 6 | 160 | 获取简单配置值 |
-| ConfigGet_嵌套键 | 1102196 | 1122 | 12 | 368 | 获取深层嵌套值 |
-| ConfigGet_数组索引 | 1000000 | 1131 | 16 | 416 | 获取数组元素 |
-| ConfigGet_不存在键 | 3572384 | 299 | 3 | 80 | 获取不存在的键 |
-| ConcurrentGet_1_goroutines | 6609396 | 199 | 6 | 160 | 1个协程并发读取 |
-| ConcurrentGet_2_goroutines | 4860673 | 392 | 6 | 160 | 2个协程并发读取 |
-| ConcurrentGet_4_goroutines | 4295160 | 473 | 6 | 160 | 4个协程并发读取 |
-| ConcurrentGet_8_goroutines | 3304923 | 363 | 6 | 160 | 8个协程并发读取 |
-| ConcurrentGet_16_goroutines | 2608808 | 606 | 6 | 160 | 16个协程并发读取 |
-| ConcurrentGet_32_goroutines | 1968396 | 511 | 6 | 160 | 32个协程并发读取 |
-| FileIO_small | 20475 | 63507 | 172 | 17295 | small配置文件I/O |
-| FileIO_medium | 12742 | 98161 | 440 | 30312 | medium配置文件I/O |
-| FileIO_large | 1350 | 965133 | 6750 | 408752 | large配置文件I/O |
-| MemoryUsage_single_instance | 12390 | 95753 | 406 | 27915 | 单个配置实例的内存使用 |
-| MemoryUsage_large_config | 1324 | 958182 | 6819 | 432291 | 大型配置的内存使用 |
-| LargeConfig_10k_keys | 69 | 22845298 | 163788 | 10212310 | 10k配置项的大型配置 |
+| 等级 | 读取 (ns/op) | 写入 (ns/op) | 初始化 (ns/op) |
+|------|-------------|-------------|----------------|
+| 🟢 A | ≤100 | ≤5,000 | ≤100,000 |
+| 🟡 B | ≤500 | ≤20,000 | ≤500,000 |
+| 🟠 C | ≤2,000 | ≤100,000 | ≤2,000,000 |
+| 🔴 D | >2,000 | >100,000 | >2,000,000 |
+
+## 详细测试结果
+
+| 测试名称 | 类别 | ops | ns/op | allocs | bytes | 吞吐量 | 等级 |
+|----------|------|-----|-------|--------|-------|--------|------|
+| GetString_simple | get | 100000000 | 10 | 0 | 0 | 100000000/s | 🟢 A |
+| GetInt_simple | get | 100000000 | 11 | 0 | 0 | 90909091/s | 🟢 A |
+| GetBool_simple | get | 100000000 | 11 | 0 | 0 | 90909091/s | 🟢 A |
+| GetFloat_simple | get | 100000000 | 11 | 0 | 0 | 90909091/s | 🟢 A |
+| GetString_nested | get | 88044018 | 11 | 0 | 0 | 90909091/s | 🟢 A |
+| GetAs_string | get | 88878420 | 12 | 0 | 0 | 83333333/s | 🟢 A |
+| GetAs_int | get | 88669264 | 12 | 0 | 0 | 83333333/s | 🟢 A |
+| GetAs_bool | get | 99628244 | 12 | 0 | 0 | 83333333/s | 🟢 A |
+| GetAs_float64 | get | 99917168 | 12 | 0 | 0 | 83333333/s | 🟢 A |
+| GetAs_duration | get | 23145954 | 46 | 1 | 8 | 21739130/s | 🟢 A |
+| GetSliceAs_float64 | get | 5645626 | 208 | 4 | 112 | 4807692/s | 🟡 B |
+| CacheHit_repeated | cache | 100000000 | 10 | 0 | 0 | 100000000/s | 🟢 A |
+| CacheHit_rotating | cache | 62346115 | 19 | 0 | 1 | 52631579/s | 🟢 A |
+| Set_simple | set | 918558 | 4992 | 28 | 2529 | 200321/s | 🟢 A |
+| Set_nested | set | 20346 | 71167 | 612 | 83768 | 14051/s | 🟠 C |
+| ConcurrentRead_1G | concat | 480670771 | 2 | 0 | 0 | 500000000/s | 🟢 A |
+| ConcurrentRead_4G | concat | 495015112 | 2 | 0 | 0 | 500000000/s | 🟢 A |
+| ConcurrentRead_8G | concat | 502833111 | 2 | 0 | 0 | 500000000/s | 🟢 A |
+| ConcurrentRead_16G | concat | 466089321 | 2 | 0 | 0 | 500000000/s | 🟢 A |
+| ConcurrentReadWrite_8R2W | concat | 40162653 | 106 | 0 | 44 | 9433962/s | 🟢 A |
+| Init_minimal | init | 36250 | 33080 | 114 | 14588 | 30230/s | 🟢 A |
+| Init_small | init | 5570 | 253997 | 2813 | 197054 | 3937/s | 🟡 B |
+| Init_medium | init | 442 | 2358984 | 26660 | 2209334 | 424/s | 🔴 D |
+| EnvBinding_10 | init | 20084 | 66737 | 589 | 33279 | 14984/s | 🟢 A |
+| EnvBinding_100 | init | 9096 | 187289 | 3259 | 186174 | 5339/s | 🟡 B |
+| LargeConfig_1k_access | get | 13427659 | 88 | 1 | 16 | 11363636/s | 🟢 A |
+| TypeConv_str_to_int | get | 32387608 | 38 | 0 | 0 | 26315789/s | 🟢 A |
+| TypeConv_str_to_bool | get | 77883691 | 16 | 0 | 0 | 62500000/s | 🟢 A |
+| TypeConv_str_to_float | get | 28070372 | 40 | 0 | 0 | 25000000/s | 🟢 A |
 
 ## 性能分析
 
-### 配置初始化
 
-- **ConfigInit_基础配置**: 72838 ns/op, 308 allocs/op
-- **ConfigInit_环境变量配置**: 169663 ns/op, 2146 allocs/op
-- **ConfigInit_完整配置**: 177191 ns/op, 2146 allocs/op
+### 缓存性能分析
 
-### 环境变量
+- **CacheHit_repeated**: 10 ns/op (A) - 重复访问同一键（缓存命中）
+- **CacheHit_rotating**: 19 ns/op (A) - 轮换访问多个键
 
-- **EnvBinding_10_vars**: 70327 ns/op, 388 allocs/op
-- **EnvBinding_100_vars**: 154300 ns/op, 2028 allocs/op
-- **EnvBinding_500_vars**: 619531 ns/op, 9226 allocs/op
-- **EnvBinding_1000_vars**: 1167696 ns/op, 18231 allocs/op
-- **EnvBinding_5000_vars**: 6084532 ns/op, 90149 allocs/op
+### 写入操作分析
 
-### 配置获取
+- **Set_simple**: 4992 ns/op (A) - 简单键值设置
+- **Set_nested**: 71167 ns/op (C) - 嵌套路径设置
 
-- **ConfigGet_简单键**: 569 ns/op, 6 allocs/op
-- **ConfigGet_嵌套键**: 1122 ns/op, 12 allocs/op
-- **ConfigGet_数组索引**: 1131 ns/op, 16 allocs/op
-- **ConfigGet_不存在键**: 299 ns/op, 3 allocs/op
+### 并发性能分析
 
-### 并发访问
+- **ConcurrentRead_1G**: 2 ns/op (A) - 8 协程并发读取
+- **ConcurrentRead_4G**: 2 ns/op (A) - 32 协程并发读取
+- **ConcurrentRead_8G**: 2 ns/op (A) - 64 协程并发读取
+- **ConcurrentRead_16G**: 2 ns/op (A) - 128 协程并发读取
+- **ConcurrentReadWrite_8R2W**: 106 ns/op (A) - 8读2写并发混合
 
-- **ConcurrentGet_1_goroutines**: 199 ns/op, 6 allocs/op
-- **ConcurrentGet_2_goroutines**: 392 ns/op, 6 allocs/op
-- **ConcurrentGet_4_goroutines**: 473 ns/op, 6 allocs/op
-- **ConcurrentGet_8_goroutines**: 363 ns/op, 6 allocs/op
-- **ConcurrentGet_16_goroutines**: 606 ns/op, 6 allocs/op
-- **ConcurrentGet_32_goroutines**: 511 ns/op, 6 allocs/op
+### 初始化性能分析
 
-### 文件I/O
+- **Init_minimal**: 33080 ns/op (A) - minimal 配置初始化
+- **Init_small**: 253997 ns/op (B) - small 配置初始化
+- **Init_medium**: 2358984 ns/op (D) - medium 配置初始化
+- **EnvBinding_10**: 66737 ns/op (A) - 绑定 10 个环境变量
+- **EnvBinding_100**: 187289 ns/op (B) - 绑定 100 个环境变量
 
-- **FileIO_small**: 63507 ns/op, 172 allocs/op
-- **FileIO_medium**: 98161 ns/op, 440 allocs/op
-- **FileIO_large**: 965133 ns/op, 6750 allocs/op
+### 读取操作分析
 
-### 内存使用
-
-- **MemoryUsage_single_instance**: 95753 ns/op, 406 allocs/op
-- **MemoryUsage_large_config**: 958182 ns/op, 6819 allocs/op
-
+- **GetString_simple**: 10 ns/op (A) - 简单字符串获取
+- **GetInt_simple**: 11 ns/op (A) - 简单整数获取
+- **GetBool_simple**: 11 ns/op (A) - 简单布尔值获取
+- **GetFloat_simple**: 11 ns/op (A) - 简单浮点数获取
+- **GetString_nested**: 11 ns/op (A) - 嵌套路径获取
+- **GetAs_string**: 12 ns/op (A) - 泛型获取 string 类型
+- **GetAs_int**: 12 ns/op (A) - 泛型获取 int 类型
+- **GetAs_bool**: 12 ns/op (A) - 泛型获取 bool 类型
+- **GetAs_float64**: 12 ns/op (A) - 泛型获取 float64 类型
+- **GetAs_duration**: 46 ns/op (A) - 泛型获取 duration 类型
+- **GetSliceAs_float64**: 208 ns/op (B) - 泛型切片获取
+- **LargeConfig_1k_access**: 88 ns/op (A) - 1000节配置随机访问
+- **TypeConv_str_to_int**: 38 ns/op (A) - 类型转换: str_to_int
+- **TypeConv_str_to_bool**: 16 ns/op (A) - 类型转换: str_to_bool
+- **TypeConv_str_to_float**: 40 ns/op (A) - 类型转换: str_to_float

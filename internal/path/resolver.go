@@ -7,9 +7,7 @@ import (
 )
 
 // Resolver 路径解析器结构体
-type Resolver struct {
-	basePath string
-}
+type Resolver struct{}
 
 // NewResolver 创建新的路径解析器
 func NewResolver() *Resolver {

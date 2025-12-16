@@ -1,32 +1,31 @@
 package sysconf
 
 import (
-	"strings"
 	"sync/atomic"
 	"time"
 )
 
 // enableReadCache 启用读取缓存（默认启用）
 func (c *Config) enableReadCache() {
-	c.cacheEnabled = true
+	c.cacheEnabled.Store(true)
 	delay := c.cacheWarmupDelay
 	if delay <= 0 {
-		go c.updateReadCache()
+		c.scheduleCacheUpdate(0)
 		return
 	}
-	time.AfterFunc(delay, c.updateReadCache)
+	c.scheduleCacheUpdate(delay)
 }
 
 // disableReadCache 禁用读取缓存
 func (c *Config) disableReadCache() {
-	c.cacheEnabled = false
+	c.cacheEnabled.Store(false)
 	emptyCache := make(map[string]any)
 	c.readCache.Store(emptyCache)
 }
 
 // loadReadCache 加载只读缓存
 func (c *Config) loadReadCache() map[string]any {
-	if !c.cacheEnabled {
+	if !c.cacheEnabled.Load() {
 		return nil
 	}
 
@@ -38,14 +37,15 @@ func (c *Config) loadReadCache() map[string]any {
 
 // updateReadCache 更新只读缓存
 func (c *Config) updateReadCache() {
-	if !c.cacheEnabled {
+	if c == nil {
+		return
+	}
+	if !c.cacheEnabled.Load() {
 		return
 	}
 
-	// 先获取配置数据，避免锁嵌套
-	c.mu.RLock()
-	allSettings := c.viper.AllSettings()
-	c.mu.RUnlock()
+	// 通过 snapshotAllSettings 获取安全快照（内部已按 cacheBuildMu -> mu -> writeMu 顺序加锁）
+	safeSettings := c.snapshotAllSettings()
 
 	// 然后更新缓存
 	c.cacheMu.Lock()
@@ -55,7 +55,7 @@ func (c *Config) updateReadCache() {
 	newCache := make(map[string]any)
 	flatCache := make(map[string]any)
 
-	for key, value := range allSettings {
+	for key, value := range safeSettings {
 		newCache[key] = value
 		// 扁平化嵌套结构，构建完整的键路径缓存
 		c.flattenMapToCache(key, value, flatCache)
@@ -71,7 +71,7 @@ func (c *Config) updateReadCache() {
 	atomic.AddInt64(&c.cacheVersion, 1)
 
 	c.logger.Debugf("Read cache updated, version: %d, keys: %d, flat keys: %d",
-		atomic.LoadInt64(&c.cacheVersion), len(allSettings), len(flatCache))
+		atomic.LoadInt64(&c.cacheVersion), len(safeSettings), len(flatCache))
 }
 
 // flattenMapToCache 递归扁平化map结构，生成完整的键路径
@@ -118,49 +118,23 @@ func (c *Config) getCachedValue(key string) (any, bool) {
 }
 
 // getNestedValue 从缓存中获取嵌套键的值
+// 委托给 getNestedValueFromData 实现，避免重复逻辑
 func (c *Config) getNestedValue(cache map[string]any, key string) any {
 	// 如果直接存在，返回
 	if value, exists := cache[key]; exists {
 		return value
 	}
 
-	// 处理嵌套键，如 "database.host"
-	if !strings.Contains(key, ".") {
-		return nil
+	// 委托给统一的嵌套查找实现
+	if value, found := c.getNestedValueFromData(cache, key); found {
+		return value
 	}
-
-	// 按点号分割键
-	parts := strings.Split(key, ".")
-	current := cache
-
-	// 逐级查找
-	for i, part := range parts {
-		if i == len(parts)-1 {
-			// 最后一级，直接返回值
-			if value, exists := current[part]; exists {
-				return value
-			}
-			return nil
-		}
-
-		// 中间级，需要是map类型
-		if nextLevel, exists := current[part]; exists {
-			if nextMap, ok := nextLevel.(map[string]any); ok {
-				current = nextMap
-			} else {
-				return nil
-			}
-		} else {
-			return nil
-		}
-	}
-
 	return nil
 }
 
 // invalidateCache 使缓存失效（在配置更新时调用）
 func (c *Config) invalidateCache() {
-	if c.cacheEnabled {
+	if c.cacheEnabled.Load() {
 		// 存储空的map而不是nil，避免atomic.Value的nil限制
 		emptyCache := make(map[string]any)
 		c.readCache.Store(emptyCache)
@@ -169,9 +143,36 @@ func (c *Config) invalidateCache() {
 		// 异步重建缓存，但不阻塞当前操作
 		delay := c.cacheRebuildDelay
 		if delay <= 0 {
-			go c.updateReadCache()
+			c.scheduleCacheUpdate(0)
 			return
 		}
-		time.AfterFunc(delay, c.updateReadCache)
+		c.scheduleCacheUpdate(delay)
 	}
+}
+
+// scheduleCacheUpdate 调度缓存更新，支持停止信号
+func (c *Config) scheduleCacheUpdate(delay time.Duration) {
+	c.wg.Add(1)
+	if delay <= 0 {
+		go func() {
+			defer c.wg.Done()
+			select {
+			case <-c.stopChan:
+				return
+			default:
+				c.updateReadCache()
+			}
+		}()
+		return
+	}
+
+	time.AfterFunc(delay, func() {
+		defer c.wg.Done()
+		select {
+		case <-c.stopChan:
+			return
+		default:
+			c.updateReadCache()
+		}
+	})
 }

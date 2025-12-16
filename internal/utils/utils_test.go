@@ -82,7 +82,9 @@ func TestSetDefaultValues(t *testing.T) {
 	}
 
 	config := &TestConfig{}
-	SetDefaultValues(config)
+	if err := SetDefaultValues(config); err != nil {
+		t.Fatalf("SetDefaultValues failed: %v", err)
+	}
 
 	if config.String != "默认字符串" {
 		t.Errorf("String 默认值错误，期望=%s, 实际=%s", "默认字符串", config.String)

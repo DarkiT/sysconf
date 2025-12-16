@@ -102,6 +102,11 @@ func (c *Config) GetBool(parts ...string) bool {
 	key, defaultVal, hasDefault := parser.ParseKeyAndDefault(parts)
 
 	if val, exists := c.getRaw(key); exists {
+		// 快速路径：直接类型断言
+		if b, ok := val.(bool); ok {
+			return b
+		}
+		// 回退到 cast 转换
 		if result, err := cast.ToBoolE(val); err == nil {
 			return result
 		}
@@ -136,6 +141,17 @@ func (c *Config) GetFloat(parts ...string) float64 {
 	key, defaultVal, hasDefault := parser.ParseKeyAndDefault(parts)
 
 	if val, exists := c.getRaw(key); exists {
+		// 快速路径：直接类型断言
+		if f, ok := val.(float64); ok {
+			return f
+		}
+		if f, ok := val.(float32); ok {
+			return float64(f)
+		}
+		if i, ok := val.(int); ok {
+			return float64(i)
+		}
+		// 回退到 cast 转换
 		if result, err := cast.ToFloat64E(val); err == nil {
 			return result
 		}
@@ -170,6 +186,17 @@ func (c *Config) GetInt(parts ...string) int {
 	key, defaultVal, hasDefault := parser.ParseKeyAndDefault(parts)
 
 	if val, exists := c.getRaw(key); exists {
+		// 快速路径：直接类型断言
+		if i, ok := val.(int); ok {
+			return i
+		}
+		if i, ok := val.(int64); ok {
+			return int(i)
+		}
+		if f, ok := val.(float64); ok {
+			return int(f)
+		}
+		// 回退到 cast 转换
 		if result, err := cast.ToIntE(val); err == nil {
 			return result
 		}
@@ -204,6 +231,11 @@ func (c *Config) GetString(parts ...string) string {
 	key, defaultVal, hasDefault := parser.ParseKeyAndDefault(parts)
 
 	if val, exists := c.getRaw(key); exists {
+		// 快速路径：直接类型断言
+		if s, ok := val.(string); ok {
+			return s
+		}
+		// 回退到 cast 转换
 		if result, err := cast.ToStringE(val); err == nil {
 			return result
 		}
