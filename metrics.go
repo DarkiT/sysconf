@@ -7,6 +7,22 @@ import (
 	"time"
 )
 
+var metricsEnabled atomic.Bool
+
+func init() {
+	metricsEnabled.Store(true)
+}
+
+// EnableMetrics 开启性能指标记录
+func EnableMetrics() {
+	metricsEnabled.Store(true)
+}
+
+// DisableMetrics 关闭性能指标记录
+func DisableMetrics() {
+	metricsEnabled.Store(false)
+}
+
 // Metrics 配置性能指标
 type Metrics struct {
 	mu             sync.RWMutex

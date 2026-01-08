@@ -109,5 +109,5 @@ database:
 	t.Cleanup(func() { _ = cfg.Close() })
 
 	assert.Equal(t, "testhost.com", cfg.GetString("host"))
-	assert.Equal(t, 5432, cfg.GetInt("port"))
+	assert.Equal(t, 5432, cfg.GetInt("database.port"))
 }

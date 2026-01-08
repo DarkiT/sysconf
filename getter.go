@@ -54,6 +54,9 @@ func (p *ParamParser) ParseKeyAndDefault(parts []string) (string, string, bool) 
 func (c *Config) Get(key string, def ...any) any {
 	start := time.Now()
 	defer func() {
+		if !metricsEnabled.Load() {
+			return
+		}
 		// 记录性能指标
 		duration := time.Since(start)
 		cacheHit := true // 新架构中总是从原子存储获取，本质上是缓存

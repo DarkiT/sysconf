@@ -6,6 +6,9 @@ import (
 )
 
 func TestMetricsSnapshotsAndReset(t *testing.T) {
+	DisableMetrics()
+	defer EnableMetrics()
+
 	m := NewMetrics()
 	m.RecordGet(2*time.Millisecond, true)
 	m.RecordGet(4*time.Millisecond, false)
