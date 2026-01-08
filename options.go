@@ -92,6 +92,27 @@ func WithBindPFlags(flags ...*pflag.FlagSet) Option {
 	}
 }
 
+// PFlagOptions 命令行标志绑定扩展选项
+type PFlagOptions struct {
+	FlagSets    []*pflag.FlagSet
+	KeyMapper   func(flag *pflag.Flag) string
+	OnlyChanged bool
+	Validate    func(flag *pflag.Flag) error
+}
+
+// WithPFlags 兼容别名：绑定命令行标志
+func WithPFlags(flags ...*pflag.FlagSet) Option {
+	return WithBindPFlags(flags...)
+}
+
+// WithPFlagOptions 使用扩展选项绑定命令行标志
+func WithPFlagOptions(opts PFlagOptions) Option {
+	return func(c *Config) {
+		c.pflags = opts.FlagSets
+		c.pflagOptions = opts
+	}
+}
+
 // WithLogger 设置配置的日志记录器
 func WithLogger(logger Logger) Option {
 	return func(c *Config) {

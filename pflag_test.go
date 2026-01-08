@@ -84,3 +84,30 @@ app:
 
 	t.Logf("✅ 多FlagSet集成测试通过")
 }
+
+func TestPFlagOptionsOnlyChanged(t *testing.T) {
+	flags := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	flags.String("host", "localhost", "Database host")
+	flags.Int("port", 5432, "Database port")
+
+	args := []string{"--host=testhost.com"}
+	err := flags.Parse(args)
+	assert.NoError(t, err)
+
+	cfg, err := New(
+		WithPFlagOptions(PFlagOptions{
+			FlagSets:    []*pflag.FlagSet{flags},
+			OnlyChanged: true,
+		}),
+		WithContent(`
+database:
+  host: "localhost"
+  port: 5432
+`),
+	)
+	assert.NoError(t, err)
+	t.Cleanup(func() { _ = cfg.Close() })
+
+	assert.Equal(t, "testhost.com", cfg.GetString("host"))
+	assert.Equal(t, 5432, cfg.GetInt("port"))
+}

@@ -93,6 +93,7 @@ type Config struct {
 	crypto        ConfigCrypto      // 加密实现实例
 	validators    []ConfigValidator // 配置验证器列表
 	pflags        []*pflag.FlagSet  // 命令行标志绑定
+	pflagOptions  PFlagOptions      // 命令行标志绑定选项
 
 	// 文件监控和写入控制
 	lastUpdate    time.Time   // 配置最后更新时间
@@ -154,6 +155,10 @@ func New(opts ...Option) (*Config, error) {
 	// 应用自定义选项
 	for _, opt := range opts {
 		opt(c)
+	}
+
+	if c.pflags == nil && len(c.pflagOptions.FlagSets) > 0 {
+		c.pflags = c.pflagOptions.FlagSets
 	}
 
 	// 初始化配置
@@ -582,7 +587,20 @@ func (c *Config) initialize() error {
 	for _, flagSet := range c.pflags {
 		// 获取所有注册的flags
 		flagSet.VisitAll(func(f *pflag.Flag) {
-			if err := c.viper.BindPFlag(f.Name, f); err != nil {
+			if c.pflagOptions.OnlyChanged && !f.Changed {
+				return
+			}
+			if c.pflagOptions.Validate != nil {
+				if err := c.pflagOptions.Validate(f); err != nil {
+					c.logger.Errorf("Invalid flag %s: %v", f.Name, err)
+					return
+				}
+			}
+			key := f.Name
+			if c.pflagOptions.KeyMapper != nil {
+				key = c.pflagOptions.KeyMapper(f)
+			}
+			if err := c.viper.BindPFlag(key, f); err != nil {
 				c.logger.Errorf("Failed to bind flag %s: %v", f.Name, err)
 			}
 		})
