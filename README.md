@@ -3,7 +3,7 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/darkit/sysconf.svg)](https://pkg.go.dev/github.com/darkit/sysconf)
 [![Go Report Card](https://goreportcard.com/badge/github.com/darkit/sysconf)](https://goreportcard.com/report/github.com/darkit/sysconf)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/darkit/sysconf/blob/master/LICENSE)
-[![Go Version](https://img.shields.io/badge/go-1.23+-blue.svg)](https://golang.org/dl/)
+[![Go Version](https://img.shields.io/badge/go-1.24+-blue.svg)](https://golang.org/dl/)
 
 **Sysconf** 是一个高性能、线程安全的Go配置管理库，专为企业级应用设计。采用原子存储技术和智能验证系统，提供可靠的并发访问支持。
 
@@ -38,7 +38,7 @@
 go get github.com/darkit/sysconf
 ```
 
-**系统要求**: Go 1.23+
+**系统要求**: Go 1.24+
 
 ## 🚀 快速开始
 
@@ -48,6 +48,7 @@ go get github.com/darkit/sysconf
 package main
 
 import (
+    "fmt"
     "log"
     "time"
     
@@ -69,8 +70,8 @@ func main() {
 
     // 类型安全的配置读取（完全线程安全）
     host := cfg.GetString("database.host", "localhost")
-    port := cfg.GetInt("database.port", "5432")
-    debug := cfg.GetBool("app.debug", "false")
+    port := cfg.GetInt("database.port", 5432)
+    debug := cfg.GetBool("app.debug", false)
     timeout := cfg.GetDuration("database.timeout")
     
     log.Printf("数据库连接: %s:%d", host, port)
@@ -446,7 +447,7 @@ stop()
 ```
 
 **热重载特性**:
-- ✅ **防抖机制**: 1秒内多次变更只触发一次
+- ✅ **防抖机制**: 默认 200ms 内多次变更只触发一次（可通过 `WithWatchDebounce` 调整）
 - ✅ **并发安全**: 配置更新期间服务不中断
 - ✅ **错误恢复**: 配置验证失败时自动回滚
 - ✅ **智能监控**: 只监控实际的文件写入操作
@@ -458,12 +459,14 @@ stop()
 
 ```go
 cfg, err := sysconf.New(
-    sysconf.WithWriteFlushDelay(500*time.Millisecond), // 调整写入延迟，0 表示立即写入
+    sysconf.WithWriteDebounceDelay(500*time.Millisecond), // 调整防抖写入延迟
+    sysconf.WithWatchDebounce(200*time.Millisecond),      // 调整热重载防抖时间
     sysconf.WithCacheTiming(0, 100*time.Millisecond),  // 控制缓存预热与重建延迟
 )
 ```
 
-- **WithWriteFlushDelay**: 自定义配置文件写入延迟，满足不同持久化需求。
+- **WithWriteDebounceDelay**: 设置防抖写入延迟，delay > 0 启用防抖，delay <= 0 立即写入。
+- **WithWatchDebounce**: 设置配置文件监听防抖时间，减小可提高回调灵敏度。
 - **WithCacheTiming**: 配置读取缓存的预热和重建间隔，避免固定魔术数字。
 - **WithEnvOptions**: 启用 SmartCase 后环境变量键会被缓存，多种大小写/前缀只需解析一次。
 - **防御性写入**: 对 map/slice 自动深拷贝，外部修改不会污染内部状态，可配合示例中的 `parent.child` 演示验证。
@@ -560,14 +563,15 @@ DATABASE_PORT=5432
 ```go
 // 字符串类型（支持默认值）
 host := cfg.GetString("database.host", "localhost")
-host := cfg.GetString("database", "host", "localhost")  // 多参数形式
+host := cfg.GetStringPath("database", "host")  // 路径片段形式
 
 // 数值类型
-port := cfg.GetInt("database.port", "5432")
-weight := cfg.GetFloat("metrics.weight", "0.95")
+port := cfg.GetInt("database.port", 5432)
+weight := cfg.GetFloat("metrics.weight", 0.95)
 
-// 布尔类型
-debug := cfg.GetBool("app.debug", "true")
+// 布尔类型（支持多种格式）
+debug := cfg.GetBool("app.debug", true)
+// 🆕 支持: true/false, "yes"/"no", "on"/"off", "1"/"0", 数字0/非零
 
 // 通用类型
 value := cfg.Get("any.key", "default_value")
@@ -672,21 +676,19 @@ if err := cfg.Set("database.host", "new-host"); err != nil {
     log.Printf("配置更新失败: %v", err)
 }
 
-// 批量更新（推荐）
-updates := map[string]interface{}{
+// 🆕 批量更新（推荐，减少验证和写入开销）
+err := cfg.SetMultiple(map[string]any{
     "database.host": "new-host",
     "database.port": 5433,
     "server.debug":  true,
-}
-
-for key, value := range updates {
-    if err := cfg.Set(key, value); err != nil {
-        log.Printf("更新 %s 失败: %v", key, err)
-    }
+})
+if err != nil {
+    log.Printf("批量更新失败: %v", err)
 }
 ```
 
 **配置更新特性**:
+- ✅ **批量更新**: `SetMultiple` 一次性设置多个配置项
 - ✅ **3秒写入延迟**: 合并短时间内的多次更新
 - ✅ **智能验证**: 字段级验证防止无效值
 - ✅ **原子性写入**: 避免配置文件损坏  
@@ -1048,6 +1050,6 @@ MIT License - 查看 [LICENSE](LICENSE) 文件了解详情。
 
 **如果这个项目对您有帮助，请给我们一个 ⭐️**
 
-[GitHub](https://github.com/darkit/sysconf) • [API文档](https://pkg.go.dev/github.com/darkit/sysconf) • [验证器文档](validation/README.md) • [加密示例](examples/encryption_demo/) • [反馈](https://github.com/darkit/sysconf/issues)
+[GitHub](https://github.com/darkit/sysconf) • [API文档](https://pkg.go.dev/github.com/darkit/sysconf) • [验证器文档](validation/README.md) • [加密示例](examples/cmd/encryption_demo/) • [反馈](https://github.com/darkit/sysconf/issues)
 
 </div>

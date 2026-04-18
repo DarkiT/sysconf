@@ -26,8 +26,11 @@ type NestedConfig struct {
 }
 
 func TestUnmarshal(t *testing.T) {
+	tmpDir := t.TempDir()
+
 	// 初始化测试用配置
 	c, err := New(
+		WithPath(tmpDir),
 		WithName("test_config"),
 		WithContent(`
 name: 测试名称
@@ -79,7 +82,10 @@ camel_case: 驼峰测试
 	// 测试: 默认值设置
 	t.Run("默认值设置", func(t *testing.T) {
 		// 创建空配置
-		emptyConfig, err := New(WithName("empty"))
+		emptyConfig, err := New(
+			WithPath(tmpDir),
+			WithName("empty"),
+		)
 		if !assert.NoError(t, err, "空配置初始化应该成功") {
 			t.FailNow()
 		}
@@ -105,6 +111,7 @@ camel_case: 驼峰测试
 	t.Run("必填字段验证", func(t *testing.T) {
 		// 创建缺少必填项的配置
 		missingRequiredConfig, err := New(
+			WithPath(tmpDir),
 			WithName("missing_required"),
 			WithContent(`
 name: 缺少必填项
@@ -124,6 +131,7 @@ name: 缺少必填项
 	// 测试: 部分配置解析
 	t.Run("部分配置解析", func(t *testing.T) {
 		c, err := New(
+			WithPath(tmpDir),
 			WithName("partial"),
 			WithContent(`
 nested:
@@ -160,6 +168,7 @@ nested:
 	t.Run("无效类型", func(t *testing.T) {
 		// 创建一个新的配置用于无效类型测试
 		simpleConfig, err := New(
+			WithPath(tmpDir),
 			WithName("simple"),
 			WithContent(`value: 123`),
 		)
@@ -169,12 +178,30 @@ nested:
 
 		var notAStruct int
 		err = simpleConfig.Unmarshal(&notAStruct)
-		// 由于解析到非结构体可能会返回错误，我们改为断言可能会有错误
-		t.Log("无效类型解析结果:", err)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "decode failed")
 	})
 
 	// 测试: nil 指针
 	t.Run("nil指针", func(t *testing.T) {
-		t.Skip("Unmarshal方法无法处理nil参数，跳过此测试")
+		var nilConfig *TestUnmarshalConfig
+		err := c.Unmarshal(nilConfig)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot be nil")
+	})
+
+	// 测试: nil 目标
+	t.Run("nil目标", func(t *testing.T) {
+		err := c.Unmarshal(nil)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot be nil")
+	})
+
+	// 测试: 非指针目标
+	t.Run("非指针目标", func(t *testing.T) {
+		var cfg TestUnmarshalConfig
+		err := c.Unmarshal(cfg)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "must be a pointer")
 	})
 }

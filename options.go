@@ -170,13 +170,24 @@ func WithEncryptionCrypto(crypto ConfigCrypto) Option {
 	})
 }
 
-// WithWriteFlushDelay 设置配置写入的延迟时间，为0或负值时表示立即写入。
-func WithWriteFlushDelay(delay time.Duration) Option {
+// WithWriteDebounceDelay 设置防抖写入延迟。
+// delay > 0 时启用防抖写入，delay <= 0 时回落为立即写入。
+func WithWriteDebounceDelay(delay time.Duration) Option {
 	return func(c *Config) {
 		if delay < 0 {
 			delay = 0
 		}
 		c.writeDelay = delay
+	}
+}
+
+// WithWatchDebounce 设置配置文件监听的防抖时间。
+func WithWatchDebounce(delay time.Duration) Option {
+	return func(c *Config) {
+		if delay < 0 {
+			delay = 0
+		}
+		c.watchDebounce = delay
 	}
 }
 

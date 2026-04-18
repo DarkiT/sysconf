@@ -1,17 +1,23 @@
 package validation
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 // RuleValidator 验证规则函数类型
 type RuleValidator func(value any, params string) (bool, string)
+
+// validatorsMu 保护 validators map 的读写锁
+var validatorsMu sync.RWMutex
 
 // 预定义的验证规则映射
 var validators = map[string]RuleValidator{
@@ -40,6 +46,8 @@ var validators = map[string]RuleValidator{
 
 // RegisterValidator 注册自定义验证规则
 func RegisterValidator(name string, validator RuleValidator) {
+	validatorsMu.Lock()
+	defer validatorsMu.Unlock()
 	validators[name] = validator
 }
 
@@ -52,7 +60,10 @@ func ValidateValue(value any, rule string) (bool, string) {
 		params = parts[1]
 	}
 
+	validatorsMu.RLock()
 	validator, ok := validators[ruleName]
+	validatorsMu.RUnlock()
+
 	if !ok {
 		return false, fmt.Sprintf("unknown validation rule: %s", ruleName)
 	}
@@ -97,14 +108,20 @@ func validateNumber(value any, _ string) (bool, string) {
 	return false, "field must be number type"
 }
 
+// emailRegex 预编译的邮箱验证正则表达式
+var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9](?:[a-zA-Z0-9._%+-]*[a-zA-Z0-9])?@[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}$`)
+
 // validateEmail 验证电子邮件地址
 func validateEmail(value any, _ string) (bool, string) {
 	email, ok := value.(string)
 	if !ok {
 		return false, "field must be string type"
 	}
-	re := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
-	if !re.MatchString(email) {
+	// 检查连续点号
+	if strings.Contains(email, "..") {
+		return false, "invalid email address"
+	}
+	if !emailRegex.MatchString(email) {
 		return false, "invalid email address"
 	}
 	return true, ""
@@ -249,13 +266,18 @@ func validateIPv4(value any, _ string) (bool, string) {
 }
 
 // validateIPv6 验证 IPv6 地址
+// 支持完整形式和压缩形式（如 ::1, fe80::1, 2001:db8::1）
 func validateIPv6(value any, _ string) (bool, string) {
 	str, ok := value.(string)
 	if !ok {
 		return false, "field must be string type"
 	}
-	re := regexp.MustCompile(`^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$`)
-	if !re.MatchString(str) {
+	ip := net.ParseIP(str)
+	if ip == nil {
+		return false, "invalid IPv6 address"
+	}
+	// 确保是 IPv6 而非 IPv4
+	if ip.To4() != nil {
 		return false, "invalid IPv6 address"
 	}
 	return true, ""
@@ -284,14 +306,20 @@ func validatePort(value any, _ string) (bool, string) {
 	return true, ""
 }
 
+// hostnameRegex 预编译的主机名验证正则表达式
+var hostnameRegex = regexp.MustCompile(`^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$`)
+
 // validateHostname 验证主机名
 func validateHostname(value any, _ string) (bool, string) {
 	str, ok := value.(string)
 	if !ok {
 		return false, "field must be string type"
 	}
-	re := regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$`)
-	if !re.MatchString(str) {
+	// 限制长度防止 ReDoS 攻击
+	if len(str) > 253 {
+		return false, "hostname too long (max 253 characters)"
+	}
+	if !hostnameRegex.MatchString(str) {
 		return false, "invalid hostname"
 	}
 	return true, ""
@@ -342,8 +370,9 @@ func validateBase64(value any, _ string) (bool, string) {
 	if !ok {
 		return false, "field must be string type"
 	}
-	re := regexp.MustCompile(`^[A-Za-z0-9+/]*={0,2}$`)
-	if !re.MatchString(str) {
+	// 使用标准库验证，确保长度和填充正确
+	_, err := base64.StdEncoding.DecodeString(str)
+	if err != nil {
 		return false, "invalid Base64 encoding"
 	}
 	return true, ""

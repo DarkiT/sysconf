@@ -23,18 +23,28 @@ func DisableMetrics() {
 	metricsEnabled.Store(false)
 }
 
+// OperationStats 操作统计信息
+type OperationStats struct {
+	Count   int64 `json:"count"`
+	TotalNs int64 `json:"total_ns"`
+	MinNs   int64 `json:"min_ns"`
+	MaxNs   int64 `json:"max_ns"`
+	LastNs  int64 `json:"last_ns"`
+}
+
 // Metrics 配置性能指标
 type Metrics struct {
 	mu             sync.RWMutex
-	StartTime      time.Time                `json:"start_time"`
-	GetCount       int64                    `json:"get_count"`
-	SetCount       int64                    `json:"set_count"`
-	CacheHits      int64                    `json:"cache_hits"`
-	CacheMisses    int64                    `json:"cache_misses"`
-	LastGetTime    time.Time                `json:"last_get_time"`
-	LastSetTime    time.Time                `json:"last_set_time"`
-	ErrorCount     int64                    `json:"error_count"`
-	OperationTimes map[string]time.Duration `json:"operation_times"`
+	StartTime      time.Time                  `json:"start_time"`
+	GetCount       int64                      `json:"get_count"`
+	SetCount       int64                      `json:"set_count"`
+	CacheHits      int64                      `json:"cache_hits"`
+	CacheMisses    int64                      `json:"cache_misses"`
+	LastGetTime    time.Time                  `json:"last_get_time"`
+	LastSetTime    time.Time                  `json:"last_set_time"`
+	ErrorCount     int64                      `json:"error_count"`
+	OperationTimes map[string]time.Duration   `json:"operation_times"` // 向后兼容：最后一次操作时间
+	OperationStats map[string]*OperationStats `json:"operation_stats"` // 新增：累积统计
 
 	// 内部计数器
 	totalGetTime int64 // 累积的Get操作时间（纳秒）
@@ -46,6 +56,7 @@ func NewMetrics() *Metrics {
 	return &Metrics{
 		StartTime:      time.Now(),
 		OperationTimes: make(map[string]time.Duration),
+		OperationStats: make(map[string]*OperationStats),
 	}
 }
 
@@ -84,7 +95,30 @@ func (m *Metrics) RecordError() {
 func (m *Metrics) RecordOperation(name string, duration time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// 向后兼容：保存最后一次操作时间
 	m.OperationTimes[name] = duration
+
+	// 新增：累积统计
+	durationNs := int64(duration)
+	stats, ok := m.OperationStats[name]
+	if !ok {
+		stats = &OperationStats{
+			MinNs: durationNs,
+			MaxNs: durationNs,
+		}
+		m.OperationStats[name] = stats
+	}
+
+	stats.Count++
+	stats.TotalNs += durationNs
+	stats.LastNs = durationNs
+	if durationNs < stats.MinNs {
+		stats.MinNs = durationNs
+	}
+	if durationNs > stats.MaxNs {
+		stats.MaxNs = durationNs
+	}
 }
 
 // GetStats 获取统计信息
@@ -108,11 +142,23 @@ func (m *Metrics) GetStats() MetricsSnapshot {
 		LastGetTime:    m.LastGetTime,
 		LastSetTime:    m.LastSetTime,
 		OperationTimes: make(map[string]time.Duration),
+		OperationStats: make(map[string]*OperationStats),
 	}
 
 	// 复制操作时间
 	for k, v := range m.OperationTimes {
 		stats.OperationTimes[k] = v
+	}
+
+	// 复制操作统计
+	for k, v := range m.OperationStats {
+		stats.OperationStats[k] = &OperationStats{
+			Count:   v.Count,
+			TotalNs: v.TotalNs,
+			MinNs:   v.MinNs,
+			MaxNs:   v.MaxNs,
+			LastNs:  v.LastNs,
+		}
 	}
 
 	// 计算平均时间
@@ -149,23 +195,25 @@ func (m *Metrics) Reset() {
 	m.LastGetTime = time.Time{}
 	m.LastSetTime = time.Time{}
 	m.OperationTimes = make(map[string]time.Duration)
+	m.OperationStats = make(map[string]*OperationStats)
 }
 
 // MetricsSnapshot 性能指标快照
 type MetricsSnapshot struct {
-	StartTime      time.Time                `json:"start_time"`
-	Uptime         time.Duration            `json:"uptime"`
-	GetCount       int64                    `json:"get_count"`
-	SetCount       int64                    `json:"set_count"`
-	CacheHits      int64                    `json:"cache_hits"`
-	CacheMisses    int64                    `json:"cache_misses"`
-	CacheHitRatio  float64                  `json:"cache_hit_ratio"`
-	ErrorCount     int64                    `json:"error_count"`
-	AvgGetTime     time.Duration            `json:"avg_get_time"`
-	AvgSetTime     time.Duration            `json:"avg_set_time"`
-	LastGetTime    time.Time                `json:"last_get_time"`
-	LastSetTime    time.Time                `json:"last_set_time"`
-	OperationTimes map[string]time.Duration `json:"operation_times"`
+	StartTime      time.Time                  `json:"start_time"`
+	Uptime         time.Duration              `json:"uptime"`
+	GetCount       int64                      `json:"get_count"`
+	SetCount       int64                      `json:"set_count"`
+	CacheHits      int64                      `json:"cache_hits"`
+	CacheMisses    int64                      `json:"cache_misses"`
+	CacheHitRatio  float64                    `json:"cache_hit_ratio"`
+	ErrorCount     int64                      `json:"error_count"`
+	AvgGetTime     time.Duration              `json:"avg_get_time"`
+	AvgSetTime     time.Duration              `json:"avg_set_time"`
+	LastGetTime    time.Time                  `json:"last_get_time"`
+	LastSetTime    time.Time                  `json:"last_set_time"`
+	OperationTimes map[string]time.Duration   `json:"operation_times"`
+	OperationStats map[string]*OperationStats `json:"operation_stats"`
 }
 
 // GetSummary 获取性能摘要字符串
@@ -223,16 +271,25 @@ func ResetGlobalMetrics() {
 
 // recordGetOperation 记录Get操作（内部使用）
 func recordGetOperation(duration time.Duration, cacheHit bool) {
+	if !metricsEnabled.Load() {
+		return
+	}
 	getGlobalMetrics().RecordGet(duration, cacheHit)
 }
 
 // recordSetOperation 记录Set操作（内部使用）
 func recordSetOperation(duration time.Duration) {
+	if !metricsEnabled.Load() {
+		return
+	}
 	getGlobalMetrics().RecordSet(duration)
 }
 
 // recordErrorOperation 记录错误操作（内部使用）
 func recordErrorOperation() {
+	if !metricsEnabled.Load() {
+		return
+	}
 	getGlobalMetrics().RecordError()
 }
 

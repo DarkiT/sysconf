@@ -1,0 +1,11 @@
+# Sysconf Claude Code Skills
+
+这个目录包含为 sysconf 配置管理库编写的 Claude Code SKILL 文件。
+
+这些 SKILL 可以帮助开发者：
+1. 快速集成 sysconf 到项目中
+2. 配置验证系统
+3. 启用配置加密
+4. 实现配置热重载
+
+详细信息请查看 README.md

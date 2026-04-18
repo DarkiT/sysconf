@@ -21,6 +21,10 @@ vendor/
 .idea/
 .fleet/
 
+# 本地开发工具
+.history/
+.vscode-server/
+
 # Go 工作区文件
 go.work
 go.work.sum
@@ -107,6 +111,7 @@ yarn.lock
 
 # 缓存目录
 .cache/
+.ace/
 .parcel-cache/
 .next/
 .nuxt/
@@ -177,21 +182,13 @@ prometheus.yml
 grafana/
 *.log.*
 
-# 本地开发工具
-.history/
-.vscode-server/
-
 # AI 配置
 .spec-workflow/
-.serena
-.claude
-.kiro
 .cursor
-.cursorrules
-.vibedev
+.claude
 .codex
 .gemini
 .mcp.json
 CLAUDE.md
-CLAUDE_CN.md
+CLAUDE_*.md
 AGENTS.md

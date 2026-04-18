@@ -1,0 +1,236 @@
+package main
+
+import (
+	"context"
+	"log"
+	"sync/atomic"
+	"time"
+
+	"github.com/darkit/sysconf"
+)
+
+// 配置监听示例
+// 展示如何使用配置热重载功能
+
+const watchConfig = `
+app:
+  name: "WatchableApp"
+  version: "1.0.0"
+
+server:
+  host: "localhost"
+  port: 8080
+  timeout: "30s"
+
+database:
+  host: "localhost"
+  port: 5432
+  max_conns: 10
+
+logging:
+  level: "info"
+  format: "json"
+`
+
+// AppConfig 配置结构体
+type AppConfig struct {
+	App struct {
+		Name    string `config:"name"`
+		Version string `config:"version"`
+	} `config:"app"`
+
+	Server struct {
+		Host    string        `config:"host"`
+		Port    int           `config:"port"`
+		Timeout time.Duration `config:"timeout"`
+	} `config:"server"`
+
+	Database struct {
+		Host     string `config:"host"`
+		Port     int    `config:"port"`
+		MaxConns int    `config:"max_conns"`
+	} `config:"database"`
+
+	Logging struct {
+		Level  string `config:"level"`
+		Format string `config:"format"`
+	} `config:"logging"`
+}
+
+// Application 应用结构
+type Application struct {
+	config atomic.Value // 存储 *AppConfig
+	cfg    *sysconf.Config
+}
+
+func main() {
+	log.Println("=== 配置监听示例 ===\n")
+
+	// 1. 创建应用实例
+	log.Println("1. 创建应用实例...")
+	app, err := NewApplication()
+	if err != nil {
+		log.Fatal("应用初始化失败:", err)
+	}
+	log.Println("✅ 应用创建成功")
+
+	// 2. 启动配置监听（基础方式）
+	log.Println("\n2. 启动配置监听（基础方式）...")
+	app.StartBasicWatch()
+
+	// 3. 模拟配置更新
+	log.Println("\n3. 模拟配置更新...")
+	simulateConfigChanges(app.cfg)
+
+	// 4. 使用 Context 控制监听
+	log.Println("\n4. 演示使用 Context 控制监听...")
+	app.StartWatchWithContext()
+
+	// 5. 演示定时取消监听
+	log.Println("\n5. 演示定时取消监听...")
+	app.StartTimedWatch(5 * time.Second)
+
+	log.Println("\n✅ 配置监听示例完成！")
+}
+
+// NewApplication 创建应用实例
+func NewApplication() (*Application, error) {
+	cfg, err := sysconf.New(
+		sysconf.WithPath("."),
+		sysconf.WithName("watch-demo"),
+		sysconf.WithContent(watchConfig),
+		sysconf.WithWatchDebounce(200*time.Millisecond),
+		sysconf.WithWriteDebounceDelay(500*time.Millisecond),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	app := &Application{
+		cfg: cfg,
+	}
+
+	// 加载初始配置
+	if err := app.loadConfig(); err != nil {
+		return nil, err
+	}
+
+	return app, nil
+}
+
+// loadConfig 加载配置到结构体
+func (app *Application) loadConfig() error {
+	var config AppConfig
+	if err := app.cfg.Unmarshal(&config); err != nil {
+		return err
+	}
+
+	app.config.Store(&config)
+	log.Printf("配置加载成功: %s v%s", config.App.Name, config.App.Version)
+
+	return nil
+}
+
+// GetConfig 获取当前配置
+func (app *Application) GetConfig() *AppConfig {
+	return app.config.Load().(*AppConfig)
+}
+
+// StartBasicWatch 启动基础配置监听
+func (app *Application) StartBasicWatch() {
+	app.cfg.Watch(func() {
+		log.Println("🔔 检测到配置变化！")
+
+		// 重新加载配置
+		if err := app.loadConfig(); err != nil {
+			log.Printf("❌ 配置重载失败: %v", err)
+			return
+		}
+
+		// 处理配置变更
+		config := app.GetConfig()
+		log.Printf("✅ 配置已更新 - 端口: %d, 日志级别: %s",
+			config.Server.Port,
+			config.Logging.Level)
+
+		// 触发业务逻辑更新
+		app.onConfigChange(config)
+	})
+
+	log.Println("✅ 配置监听已启动（基础模式）")
+}
+
+// StartWatchWithContext 使用 Context 启动配置监听
+func (app *Application) StartWatchWithContext() {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// 启动可取消的监听
+	stopWatch := app.cfg.WatchWithContext(ctx, func() {
+		log.Println("🔔 [Context] 检测到配置变化")
+
+		if err := app.loadConfig(); err != nil {
+			log.Printf("❌ [Context] 配置重载失败: %v", err)
+			return
+		}
+
+		log.Println("✅ [Context] 配置已更新")
+	})
+
+	log.Println("✅ 配置监听已启动（Context 模式）")
+
+	// 3秒后取消监听
+	time.AfterFunc(3*time.Second, func() {
+		log.Println("🛑 3秒后取消监听...")
+		stopWatch() // 或者 cancel()
+		log.Println("✅ 监听已取消")
+	})
+
+	// 保持 cancel 以备后用
+	_ = cancel
+}
+
+// StartTimedWatch 启动定时监听
+func (app *Application) StartTimedWatch(duration time.Duration) {
+	ctx, cancel := context.WithTimeout(context.Background(), duration)
+	defer cancel()
+
+	app.cfg.WatchWithContext(ctx, func() {
+		log.Println("🔔 [定时] 检测到配置变化")
+	})
+
+	log.Printf("✅ 配置监听将在 %v 后自动停止", duration)
+
+	// 等待超时
+	<-ctx.Done()
+	log.Println("⏰ 监听时间到，已自动停止")
+}
+
+// onConfigChange 配置变更处理
+func (app *Application) onConfigChange(config *AppConfig) {
+	// 在这里处理配置变更的业务逻辑
+	// 例如：重启服务器、更新日志级别、重新连接数据库等
+
+	log.Println("📊 处理配置变更...")
+
+	// 模拟处理不同的配置变更
+	log.Printf("   - 服务器配置: %s:%d", config.Server.Host, config.Server.Port)
+	log.Printf("   - 数据库连接池: %d", config.Database.MaxConns)
+	log.Printf("   - 日志配置: %s (%s)", config.Logging.Level, config.Logging.Format)
+}
+
+// simulateConfigChanges 模拟配置更新
+func simulateConfigChanges(cfg *sysconf.Config) {
+	go func() {
+		time.Sleep(1 * time.Second)
+		log.Println("\n📝 模拟更新 1: 修改服务器端口...")
+		cfg.Set("server.port", 9090)
+
+		time.Sleep(1 * time.Second)
+		log.Println("\n📝 模拟更新 2: 修改日志级别...")
+		cfg.Set("logging.level", "debug")
+
+		time.Sleep(1 * time.Second)
+		log.Println("\n📝 模拟更新 3: 修改数据库连接池...")
+		cfg.Set("database.max_conns", 20)
+	}()
+}

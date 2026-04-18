@@ -1,0 +1,228 @@
+package main
+
+import (
+	"fmt"
+	"log"
+	"os"
+	"time"
+
+	"github.com/darkit/sysconf"
+	"github.com/darkit/sysconf/validation"
+)
+
+// 完整的生产级集成示例
+// 展示 sysconf 的所有核心功能
+
+const defaultConfig = `
+app:
+  name: "ProductionApp"
+  version: "1.0.0"
+  env: "production"
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  timeout: "30s"
+  read_timeout: "15s"
+  write_timeout: "15s"
+  features:
+    - http
+    - grpc
+    - metrics
+
+database:
+  host: "localhost"
+  port: 5432
+  username: "postgres"
+  password: ""  # 通过环境变量设置
+  database: "myapp"
+  type: "postgresql"
+  max_conns: 20
+  timeout: "10s"
+  options:
+    sslmode: "require"
+    timezone: "UTC"
+
+logging:
+  level: "info"
+  format: "json"
+  path: "logs/app.log"
+  max_size: 100
+  max_backups: 5
+  max_age: 30
+
+redis:
+  host: "localhost"
+  port: 6379
+  password: ""
+  db: 0
+  timeout: "5s"
+  addresses:
+    - "localhost:6379"
+`
+
+// Config 配置结构体
+type Config struct {
+	App      AppConfig      `config:"app"`
+	Server   ServerConfig   `config:"server"`
+	Database DatabaseConfig `config:"database"`
+	Logging  LoggingConfig  `config:"logging"`
+	Redis    RedisConfig    `config:"redis"`
+}
+
+type AppConfig struct {
+	Name    string `config:"name" validate:"required"`
+	Version string `config:"version" validate:"required,semver"`
+	Env     string `config:"env" validate:"required,oneof=development test production"`
+}
+
+type ServerConfig struct {
+	Host         string        `config:"host" validate:"required"`
+	Port         int           `config:"port" validate:"required,min=1,max=65535"`
+	Timeout      time.Duration `config:"timeout" validate:"required"`
+	ReadTimeout  time.Duration `config:"read_timeout"`
+	WriteTimeout time.Duration `config:"write_timeout"`
+	Features     []string      `config:"features"`
+}
+
+type DatabaseConfig struct {
+	Host     string        `config:"host" validate:"required"`
+	Port     int           `config:"port" validate:"required,min=1,max=65535"`
+	Username string        `config:"username" validate:"required"`
+	Password string        `config:"password" validate:"required"`
+	Database string        `config:"database" validate:"required"`
+	Type     string        `config:"type" validate:"oneof=postgresql mysql sqlite"`
+	MaxConns int           `config:"max_conns" validate:"min=1,max=100"`
+	Timeout  time.Duration `config:"timeout"`
+	Options  struct {
+		SSLMode  string `config:"sslmode" validate:"oneof=disable require verify-ca verify-full"`
+		Timezone string `config:"timezone" validate:"timezone"`
+	} `config:"options"`
+}
+
+type LoggingConfig struct {
+	Level      string `config:"level" validate:"oneof=debug info warn error"`
+	Format     string `config:"format" validate:"oneof=json text"`
+	Path       string `config:"path" validate:"required"`
+	MaxSize    int    `config:"max_size"`
+	MaxBackups int    `config:"max_backups"`
+	MaxAge     int    `config:"max_age"`
+}
+
+type RedisConfig struct {
+	Host      string        `config:"host"`
+	Port      int           `config:"port" validate:"min=1,max=65535"`
+	Password  string        `config:"password"`
+	DB        int           `config:"db" validate:"min=0,max=15"`
+	Timeout   time.Duration `config:"timeout"`
+	Addresses []string      `config:"addresses"`
+}
+
+func main() {
+	// 1. 设置环境变量示例
+	os.Setenv("APP_DATABASE_PASSWORD", "production-secret-password")
+
+	// 2. 创建配置实例（完整选项）
+	cfg, err := sysconf.New(
+		// 基础配置
+		sysconf.WithPath("configs"),
+		sysconf.WithName("app"),
+		sysconf.WithMode("yaml"),
+		sysconf.WithContent(defaultConfig),
+
+		// 环境变量支持（智能大小写匹配）
+		sysconf.WithEnv("APP"),
+
+		// 验证器配置
+		sysconf.WithValidators(
+			validation.NewDatabaseValidator(),
+			validation.NewWebServerValidator(),
+			validation.NewRedisValidator(),
+			validation.NewLogValidator(),
+		),
+
+		// 自定义验证
+		sysconf.WithValidateFunc(func(config map[string]any) error {
+			// 生产环境必须启用 SSL
+			if appMap, ok := config["app"].(map[string]any); ok {
+				if env, ok := appMap["env"].(string); ok && env == "production" {
+					if dbMap, ok := config["database"].(map[string]any); ok {
+						if opts, ok := dbMap["options"].(map[string]any); ok {
+							if sslMode, ok := opts["sslmode"].(string); ok && sslMode == "disable" {
+								return fmt.Errorf("生产环境必须启用数据库 SSL")
+							}
+						}
+					}
+				}
+			}
+			return nil
+		}),
+	)
+	if err != nil {
+		log.Fatalf("配置初始化失败: %v", err)
+	}
+
+	// 3. 解析配置到结构体
+	var config Config
+	if err := cfg.Unmarshal(&config); err != nil {
+		log.Fatalf("配置解析失败: %v", err)
+	}
+
+	// 4. 使用配置
+	log.Printf("=== 应用配置 ===")
+	log.Printf("应用名称: %s", config.App.Name)
+	log.Printf("应用版本: %s", config.App.Version)
+	log.Printf("运行环境: %s", config.App.Env)
+
+	log.Printf("\n=== 服务器配置 ===")
+	log.Printf("监听地址: %s:%d", config.Server.Host, config.Server.Port)
+	log.Printf("超时设置: %v", config.Server.Timeout)
+	log.Printf("启用功能: %v", config.Server.Features)
+
+	log.Printf("\n=== 数据库配置 ===")
+	log.Printf("数据库类型: %s", config.Database.Type)
+	log.Printf("连接地址: %s@%s:%d/%s",
+		config.Database.Username,
+		config.Database.Host,
+		config.Database.Port,
+		config.Database.Database,
+	)
+	log.Printf("SSL 模式: %s", config.Database.Options.SSLMode)
+	log.Printf("最大连接数: %d", config.Database.MaxConns)
+
+	log.Printf("\n=== 日志配置 ===")
+	log.Printf("日志级别: %s", config.Logging.Level)
+	log.Printf("日志格式: %s", config.Logging.Format)
+	log.Printf("日志路径: %s", config.Logging.Path)
+
+	// 5. 演示动态配置更新
+	log.Printf("\n=== 动态配置更新 ===")
+	if err := cfg.Set("server.port", 9090); err != nil {
+		log.Printf("更新端口失败: %v", err)
+	} else {
+		log.Printf("服务器端口已更新: %d", cfg.GetInt("server.port"))
+	}
+
+	// 6. 演示配置验证（尝试设置无效值）
+	log.Printf("\n=== 配置验证演示 ===")
+	if err := cfg.Set("server.port", 70000); err != nil {
+		log.Printf("✓ 验证器成功拦截无效端口: %v", err)
+	}
+
+	// 7. 演示各种读取方式
+	log.Printf("\n=== 配置读取方式 ===")
+
+	// 方式 1: 直接键值访问
+	appName := cfg.GetString("app.name")
+	log.Printf("方式1 (键值): %s", appName)
+
+	// 方式 2: 泛型 API
+	port := sysconf.GetAs[int](cfg, "server.port", 8080)
+	log.Printf("方式2 (泛型): %d", port)
+
+	// 方式 3: 切片访问
+	features := cfg.GetStringSlice("server.features")
+	log.Printf("方式3 (切片): %v", features)
+
+	log.Println("\n✅ 完整集成示例运行成功！")
+}

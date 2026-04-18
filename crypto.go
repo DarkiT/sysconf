@@ -3,11 +3,13 @@ package sysconf
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 
+	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
@@ -50,8 +52,29 @@ type DefaultCrypto struct {
 	prefix string // 加密数据前缀标识
 }
 
+// Argon2id 参数常量
+const (
+	argon2Time    = 1         // 迭代次数
+	argon2Memory  = 64 * 1024 // 内存使用量 (64 MB)
+	argon2Threads = 4         // 并行线程数
+	argon2KeyLen  = 32        // 密钥长度
+	saltLen       = 16        // 盐值长度
+)
+
+var (
+	// cryptoVersion 表示当前密文格式版本
+	cryptoVersion = []byte{0x02}
+	// passwordMarker 标识当前使用密码派生密钥
+	passwordMarker = []byte{0x01}
+)
+
+// deriveKey 使用 Argon2id 从密码导出密钥
+func deriveKey(password []byte, salt []byte) []byte {
+	return argon2.IDKey(password, salt, argon2Time, argon2Memory, argon2Threads, argon2KeyLen)
+}
+
 // NewDefaultCrypto 创建新的默认加密器
-// key: 加密密钥，如果为空则生成随机密钥
+// key: 加密密钥或密码，如果为空则生成随机密钥
 func NewDefaultCrypto(key string) (*DefaultCrypto, error) {
 	var keyBytes []byte
 
@@ -62,9 +85,13 @@ func NewDefaultCrypto(key string) (*DefaultCrypto, error) {
 			return nil, fmt.Errorf("生成随机密钥失败: %w", err)
 		}
 	} else {
-		// 使用SHA256哈希用户提供的密钥以确保长度为32字节
-		hash := sha256.Sum256([]byte(key))
-		keyBytes = hash[:]
+		// 如果传入的是已编码的密钥，直接使用；否则对密码做固定长度归一
+		if decoded, err := base64.StdEncoding.DecodeString(key); err == nil && len(decoded) == argon2KeyLen {
+			keyBytes = decoded
+		} else {
+			hash := sha256.Sum256([]byte(key))
+			keyBytes = hash[:]
+		}
 	}
 
 	return &DefaultCrypto{
@@ -79,8 +106,16 @@ func (d *DefaultCrypto) Encrypt(data []byte) ([]byte, error) {
 		return nil, errors.New("加密数据不能为空")
 	}
 
+	// 每次加密生成随机盐值
+	salt := make([]byte, saltLen)
+	if _, err := rand.Read(salt); err != nil {
+		return nil, fmt.Errorf("生成盐值失败: %w", err)
+	}
+
+	derivedKey := deriveKey(d.key, salt)
+
 	// 创建ChaCha20-Poly1305 AEAD
-	aead, err := chacha20poly1305.New(d.key)
+	aead, err := chacha20poly1305.New(derivedKey)
 	if err != nil {
 		return nil, fmt.Errorf("创建ChaCha20-Poly1305失败: %w", err)
 	}
@@ -94,8 +129,13 @@ func (d *DefaultCrypto) Encrypt(data []byte) ([]byte, error) {
 	// 加密数据
 	ciphertext := aead.Seal(nonce, nonce, data, nil)
 
-	// 添加前缀并编码为base64
-	result := append([]byte(d.prefix), ciphertext...)
+	// 添加前缀并编码为base64（prefix + version + marker + salt + nonce+ciphertext）
+	payload := append([]byte(d.prefix), cryptoVersion...)
+	payload = append(payload, passwordMarker...)
+	payload = append(payload, salt...)
+	payload = append(payload, ciphertext...)
+
+	result := payload
 	encoded := make([]byte, base64.StdEncoding.EncodedLen(len(result)))
 	base64.StdEncoding.Encode(encoded, result)
 
@@ -123,13 +163,27 @@ func (d *DefaultCrypto) Decrypt(data []byte) ([]byte, error) {
 
 	// 移除前缀
 	prefixLen := len(d.prefix)
-	if len(decoded) < prefixLen {
+	if len(decoded) < prefixLen+len(cryptoVersion)+len(passwordMarker)+saltLen {
 		return nil, errors.New("加密数据格式无效")
 	}
-	ciphertext := decoded[prefixLen:]
+	if subtle.ConstantTimeCompare(decoded[prefixLen:prefixLen+len(cryptoVersion)], cryptoVersion) != 1 {
+		return nil, errors.New("不支持的加密数据版本")
+	}
+	if subtle.ConstantTimeCompare(
+		decoded[prefixLen+len(cryptoVersion):prefixLen+len(cryptoVersion)+len(passwordMarker)],
+		passwordMarker,
+	) != 1 {
+		return nil, errors.New("不支持的加密数据标识")
+	}
+
+	saltOffset := prefixLen + len(cryptoVersion) + len(passwordMarker)
+	salt := decoded[saltOffset : saltOffset+saltLen]
+	ciphertext := decoded[saltOffset+saltLen:]
+
+	derivedKey := deriveKey(d.key, salt)
 
 	// 创建ChaCha20-Poly1305 AEAD
-	aead, err := chacha20poly1305.New(d.key)
+	aead, err := chacha20poly1305.New(derivedKey)
 	if err != nil {
 		return nil, fmt.Errorf("创建ChaCha20-Poly1305失败: %w", err)
 	}
@@ -166,18 +220,23 @@ func (d *DefaultCrypto) IsEncrypted(data []byte) bool {
 	}
 	decoded = decoded[:n]
 
-	// 检查前缀
+	// 检查前缀（使用常量时间比较防止时序攻击）
 	prefixBytes := []byte(d.prefix)
-	if len(decoded) < len(prefixBytes) {
+	if len(decoded) < len(prefixBytes)+len(cryptoVersion)+len(passwordMarker)+saltLen {
 		return false
 	}
-
-	for i, b := range prefixBytes {
-		if decoded[i] != b {
-			return false
-		}
+	if subtle.ConstantTimeCompare(decoded[:len(prefixBytes)], prefixBytes) != 1 {
+		return false
 	}
-
+	if subtle.ConstantTimeCompare(decoded[len(prefixBytes):len(prefixBytes)+len(cryptoVersion)], cryptoVersion) != 1 {
+		return false
+	}
+	if subtle.ConstantTimeCompare(
+		decoded[len(prefixBytes)+len(cryptoVersion):len(prefixBytes)+len(cryptoVersion)+len(passwordMarker)],
+		passwordMarker,
+	) != 1 {
+		return false
+	}
 	return true
 }
 

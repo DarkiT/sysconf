@@ -60,7 +60,7 @@ func demoSmartCaseEnvVars() {
 
 	// 读取配置，智能匹配会自动找到对应的环境变量
 	dbHost := cfg.GetString("database.host", "default-host")
-	serverPort := cfg.GetInt("server.port", "3000")
+	serverPort := cfg.GetInt("server.port", 3000)
 	cacheTimeout := cfg.GetString("cache.timeout", "1m")
 	featuresEnabled := cfg.GetBool("features.enabled")
 

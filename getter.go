@@ -9,40 +9,6 @@ import (
 	"github.com/spf13/cast"
 )
 
-// ParamParser 参数解析器
-type ParamParser struct{}
-
-// ParseKeyAndDefault 解析配置键和默认值
-// 返回: (key, defaultValue, hasDefault)
-func (p *ParamParser) ParseKeyAndDefault(parts []string) (string, string, bool) {
-	if len(parts) == 0 {
-		return "", "", false
-	}
-
-	// 如果只有一个参数，检查是否包含点号
-	if len(parts) == 1 {
-		return parts[0], "", false
-	}
-
-	// 对于多个参数，区分两种情况：
-	// 1. 点号格式：cfg.GetString("database.host", "default")
-	// 2. 多参数格式：cfg.GetString("database", "host", "default")
-
-	firstPart := parts[0]
-	if strings.Contains(firstPart, ".") {
-		// 点号格式：第一个参数是完整键，最后一个参数是默认值
-		key := firstPart
-		defaultVal := parts[len(parts)-1]
-		return key, defaultVal, true
-	} else {
-		// 多参数格式：除最后一个参数外的所有参数组成键
-		keyParts := parts[:len(parts)-1]
-		key := strings.Join(keyParts, ".")
-		defaultVal := parts[len(parts)-1]
-		return key, defaultVal, true
-	}
-}
-
 // Get 获取配置值
 //
 // 参数:
@@ -87,27 +53,46 @@ func (c *Config) Get(key string, def ...any) any {
 
 // GetBool 获取布尔值配置
 //
-// 支持两种调用方式：
-//   - GetBool("database.host", "true") - 点号分隔的键名
-//   - GetBool("database", "host", "true") - 多参数形式
+// 支持的布尔值表示：
+//   - true: true, "true", "yes", "on", "1", 1, 非零数字
+//   - false: false, "false", "no", "off", "0", 0
 //
 // 参数:
-//   - parts: 可变参数，最后一个参数可选作为默认值
+//   - key: 配置键名
+//   - def: 可选默认值
 //
 // 返回值:
 //   - 布尔类型的配置值，如果键不存在且提供了默认值则返回默认值
-func (c *Config) GetBool(parts ...string) bool {
-	if len(parts) == 0 {
+func (c *Config) GetBool(key string, def ...bool) bool {
+	if key == "" {
+		if len(def) > 0 {
+			return def[0]
+		}
 		return false
 	}
-
-	parser := &ParamParser{}
-	key, defaultVal, hasDefault := parser.ParseKeyAndDefault(parts)
 
 	if val, exists := c.getRaw(key); exists {
 		// 快速路径：直接类型断言
 		if b, ok := val.(bool); ok {
 			return b
+		}
+		// 支持数字类型
+		switch v := val.(type) {
+		case int:
+			return v != 0
+		case int64:
+			return v != 0
+		case float64:
+			return v != 0
+		}
+		// 支持字符串类型
+		if s, ok := val.(string); ok {
+			switch strings.ToLower(s) {
+			case "true", "yes", "on", "1":
+				return true
+			case "false", "no", "off", "0":
+				return false
+			}
 		}
 		// 回退到 cast 转换
 		if result, err := cast.ToBoolE(val); err == nil {
@@ -115,33 +100,28 @@ func (c *Config) GetBool(parts ...string) bool {
 		}
 	}
 
-	if hasDefault {
-		if val, err := strconv.ParseBool(defaultVal); err == nil {
-			return val
-		}
-		c.logger.Errorf("Invalid default bool value '%s' for key '%s', using false", defaultVal, key)
+	if len(def) > 0 {
+		return def[0]
 	}
+
 	return false
 }
 
 // GetFloat 获取浮点数配置
 //
-// 支持两种调用方式：
-//   - GetFloat("metrics.value", "0.95") - 点号分隔的键名
-//   - GetFloat("metrics", "value", "0.95") - 多参数形式
-//
 // 参数:
-//   - parts: 可变参数，最后一个参数可选作为默认值
+//   - key: 配置键名
+//   - def: 可选默认值
 //
 // 返回值:
 //   - 浮点类型的配置值，如果键不存在且提供了默认值则返回默认值
-func (c *Config) GetFloat(parts ...string) float64 {
-	if len(parts) == 0 {
+func (c *Config) GetFloat(key string, def ...float64) float64 {
+	if key == "" {
+		if len(def) > 0 {
+			return def[0]
+		}
 		return 0
 	}
-
-	parser := &ParamParser{}
-	key, defaultVal, hasDefault := parser.ParseKeyAndDefault(parts)
 
 	if val, exists := c.getRaw(key); exists {
 		// 快速路径：直接类型断言
@@ -160,33 +140,28 @@ func (c *Config) GetFloat(parts ...string) float64 {
 		}
 	}
 
-	if hasDefault {
-		if val, err := strconv.ParseFloat(defaultVal, 64); err == nil {
-			return val
-		}
-		c.logger.Errorf("Invalid default float value '%s' for key '%s', using 0", defaultVal, key)
+	if len(def) > 0 {
+		return def[0]
 	}
+
 	return 0.0
 }
 
 // GetInt 获取整数配置
 //
-// 支持两种调用方式：
-//   - GetInt("database.port", "5432") - 点号分隔的键名
-//   - GetInt("database", "port", "5432") - 多参数形式
-//
 // 参数:
-//   - parts: 可变参数，最后一个参数可选作为默认值
+//   - key: 配置键名
+//   - def: 可选默认值
 //
 // 返回值:
 //   - 整数类型的配置值，如果键不存在且提供了默认值则返回默认值
-func (c *Config) GetInt(parts ...string) int {
-	if len(parts) == 0 {
+func (c *Config) GetInt(key string, def ...int) int {
+	if key == "" {
+		if len(def) > 0 {
+			return def[0]
+		}
 		return 0
 	}
-
-	parser := &ParamParser{}
-	key, defaultVal, hasDefault := parser.ParseKeyAndDefault(parts)
 
 	if val, exists := c.getRaw(key); exists {
 		// 快速路径：直接类型断言
@@ -205,33 +180,28 @@ func (c *Config) GetInt(parts ...string) int {
 		}
 	}
 
-	if hasDefault {
-		if val, err := strconv.Atoi(defaultVal); err == nil {
-			return val
-		}
-		c.logger.Errorf("Invalid default int value '%s' for key '%s', using 0", defaultVal, key)
+	if len(def) > 0 {
+		return def[0]
 	}
+
 	return 0
 }
 
 // GetString 获取字符串配置
 //
-// 支持两种调用方式：
-//   - GetString("database.host", "localhost") - 点号分隔的键名
-//   - GetString("database", "host", "localhost") - 多参数形式
-//
 // 参数:
-//   - parts: 可变参数，最后一个参数可选作为默认值
+//   - key: 配置键名
+//   - def: 可选默认值
 //
 // 返回值:
 //   - 字符串类型的配置值，如果键不存在且提供了默认值则返回默认值
-func (c *Config) GetString(parts ...string) string {
-	if len(parts) == 0 {
+func (c *Config) GetString(key string, def ...string) string {
+	if key == "" {
+		if len(def) > 0 {
+			return def[0]
+		}
 		return ""
 	}
-
-	parser := &ParamParser{}
-	key, defaultVal, hasDefault := parser.ParseKeyAndDefault(parts)
 
 	if val, exists := c.getRaw(key); exists {
 		// 快速路径：直接类型断言
@@ -244,10 +214,48 @@ func (c *Config) GetString(parts ...string) string {
 		}
 	}
 
-	if hasDefault {
-		return defaultVal
+	if len(def) > 0 {
+		return def[0]
 	}
+
 	return ""
+}
+
+// GetStringPath 使用路径片段读取字符串配置（例如: GetStringPath("database", "host")）。
+func (c *Config) GetStringPath(path ...string) string {
+	return c.GetString(joinConfigPath(path...))
+}
+
+// GetIntPath 使用路径片段读取整数配置（例如: GetIntPath("database", "port")）。
+func (c *Config) GetIntPath(path ...string) int {
+	return c.GetInt(joinConfigPath(path...))
+}
+
+// GetFloatPath 使用路径片段读取浮点配置（例如: GetFloatPath("metrics", "weight")）。
+func (c *Config) GetFloatPath(path ...string) float64 {
+	return c.GetFloat(joinConfigPath(path...))
+}
+
+// GetBoolPath 使用路径片段读取布尔配置（例如: GetBoolPath("app", "debug")）。
+func (c *Config) GetBoolPath(path ...string) bool {
+	return c.GetBool(joinConfigPath(path...))
+}
+
+func joinConfigPath(parts ...string) string {
+	if len(parts) == 0 {
+		return ""
+	}
+
+	filtered := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		filtered = append(filtered, part)
+	}
+
+	return strings.Join(filtered, ".")
 }
 
 // GetStringSlice 获取字符串切片配置

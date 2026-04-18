@@ -13,54 +13,15 @@ import (
 
 // readConfigFile 读取配置文件（支持解密）- 线程安全版本
 func (c *Config) readConfigFile() error {
-	if c.name == "" {
-		return nil // 内存模式，不需要读取文件
-	}
-
-	configFile := filepath.Join(c.path, c.name+"."+c.mode)
-
-	// 检查文件是否存在
-	if _, err := os.Stat(configFile); os.IsNotExist(err) {
-		return err // 直接返回原始错误，让调用者处理
-	}
-
-	// 读取文件内容（锁外执行 I/O）
-	data, err := os.ReadFile(configFile)
-	if err != nil {
-		return fmt.Errorf("read config file: %w", err)
-	}
-
-	// 如果启用了加密，尝试解密（锁外执行解密）
-	if c.cryptoOptions.Enabled && c.crypto != nil {
-		if c.crypto.IsEncrypted(data) {
-			c.logger.Debugf("Decrypting config file")
-			decryptedData, err := c.crypto.Decrypt(data)
-			if err != nil {
-				return fmt.Errorf("decrypt config file: %w", err)
-			}
-			data = decryptedData
-			c.logger.Infof("Config file decrypted successfully")
-		} else {
-			c.logger.Debugf("Config file is not encrypted")
-		}
-	}
-
-	// 使用 viper 解析配置内容（需要锁保护，锁顺序：cacheBuildMu -> writeMu）
-	c.cacheBuildMu.Lock()
-	c.writeMu.Lock()
-	err = c.viper.ReadConfig(strings.NewReader(string(data)))
-	c.writeMu.Unlock()
-	c.cacheBuildMu.Unlock()
-
-	if err != nil {
-		return fmt.Errorf("parse config content: %w", err)
-	}
-
-	return nil
+	return c.readConfigFileInternal(false)
 }
 
 // readConfigFileUnsafe 读取配置文件 - 调用者已持锁版本（供 initialize 等内部方法使用）
 func (c *Config) readConfigFileUnsafe() error {
+	return c.readConfigFileInternal(true)
+}
+
+func (c *Config) readConfigFileInternal(locked bool) error {
 	if c.name == "" {
 		return nil
 	}
@@ -90,11 +51,25 @@ func (c *Config) readConfigFileUnsafe() error {
 		}
 	}
 
-	if err := c.viper.ReadConfig(strings.NewReader(string(data))); err != nil {
+	if err := c.readConfigBytes(data, locked); err != nil {
 		return fmt.Errorf("parse config content: %w", err)
 	}
 
 	return nil
+}
+
+func (c *Config) readConfigBytes(data []byte, locked bool) error {
+	reader := strings.NewReader(string(data))
+	if locked {
+		return c.viper.ReadConfig(reader)
+	}
+
+	c.cacheBuildMu.Lock()
+	c.writeMu.Lock()
+	err := c.viper.ReadConfig(reader)
+	c.writeMu.Unlock()
+	c.cacheBuildMu.Unlock()
+	return err
 }
 
 // writeConfigFile 写入配置文件（支持加密）

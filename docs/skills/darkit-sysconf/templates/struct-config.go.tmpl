@@ -1,0 +1,90 @@
+package config
+
+import (
+	"time"
+)
+
+// AppConfig 应用完整配置结构体
+// 使用 config 标签映射配置键，default 标签设置默认值，validate 标签添加验证规则
+type AppConfig struct {
+	App      AppSection      `config:"app"`
+	Server   ServerSection   `config:"server"`
+	Database DatabaseSection `config:"database"`
+	Logging  LoggingSection  `config:"logging"`
+	Redis    RedisSection    `config:"redis"`    // 可选：如果不使用 Redis 可以删除
+}
+
+// AppSection 应用基础配置
+type AppSection struct {
+	Name    string `config:"name" default:"MyApp" validate:"required,min=1"`
+	Version string `config:"version" default:"1.0.0" validate:"required,semver"`
+	Env     string `config:"env" default:"development" validate:"required,oneof=development test production"`
+}
+
+// ServerSection 服务器配置
+type ServerSection struct {
+	Host         string        `config:"host" default:"localhost" validate:"required,hostname_rfc1123"`
+	Port         int           `config:"port" default:"8080" validate:"required,min=1,max=65535"`
+	Timeout      time.Duration `config:"timeout" default:"30s" validate:"required"`
+	ReadTimeout  time.Duration `config:"read_timeout" default:"15s"`
+	WriteTimeout time.Duration `config:"write_timeout" default:"15s"`
+	Features     []string      `config:"features" default:"[\"http\"]" validate:"dive,required"`
+}
+
+// DatabaseSection 数据库配置
+type DatabaseSection struct {
+	Host     string        `config:"host" default:"localhost" validate:"required,hostname_rfc1123"`
+	Port     int           `config:"port" default:"5432" validate:"required,min=1,max=65535"`
+	Username string        `config:"username" default:"postgres" validate:"required,min=1"`
+	Password string        `config:"password" validate:"required,min=1"`  // 敏感信息不设置默认值
+	Database string        `config:"database" default:"myapp" validate:"required,min=1"`
+	Type     string        `config:"type" default:"postgresql" validate:"oneof=postgresql mysql sqlite mongodb"`
+	MaxConns int           `config:"max_conns" default:"10" validate:"min=1,max=100"`
+	Timeout  time.Duration `config:"timeout" default:"10s" validate:"required"`
+	Options  DBOptions     `config:"options"`
+}
+
+// DBOptions 数据库选项
+type DBOptions struct {
+	SSLMode  string `config:"sslmode" default:"disable" validate:"oneof=disable require verify-ca verify-full"`
+	Timezone string `config:"timezone" default:"UTC" validate:"timezone"`
+}
+
+// LoggingSection 日志配置
+type LoggingSection struct {
+	Level      string `config:"level" default:"info" validate:"required,oneof=debug info warn error"`
+	Format     string `config:"format" default:"json" validate:"required,oneof=json text"`
+	Path       string `config:"path" default:"logs/app.log" validate:"required"`
+	MaxSize    int    `config:"max_size" default:"100" validate:"min=1,max=1000"`
+	MaxBackups int    `config:"max_backups" default:"3" validate:"min=0,max=100"`
+	MaxAge     int    `config:"max_age" default:"28" validate:"min=1,max=365"`
+}
+
+// RedisSection Redis 配置（可选）
+type RedisSection struct {
+	Host      string        `config:"host" default:"localhost" validate:"required,hostname_rfc1123"`
+	Port      int           `config:"port" default:"6379" validate:"required,min=1,max=65535"`
+	Password  string        `config:"password" default:""`  // Redis 密码可选
+	DB        int           `config:"db" default:"0" validate:"min=0,max=15"`
+	Timeout   time.Duration `config:"timeout" default:"5s" validate:"required"`
+	Addresses []string      `config:"addresses" default:"[\"localhost:6379\"]" validate:"required,dive,required"`
+}
+
+// GetAppConfig 辅助函数：从 sysconf.Config 加载配置
+func GetAppConfig(cfg interface{ Unmarshal(interface{}, ...string) error }) (*AppConfig, error) {
+	var config AppConfig
+	if err := cfg.Unmarshal(&config); err != nil {
+		return nil, err
+	}
+	return &config, nil
+}
+
+// Validate 可选：添加自定义验证逻辑
+func (c *AppConfig) Validate() error {
+	// 在此添加跨字段验证逻辑
+	// 例如：生产环境必须启用 SSL
+	if c.App.Env == "production" && c.Database.Options.SSLMode == "disable" {
+		return fmt.Errorf("生产环境必须启用数据库 SSL")
+	}
+	return nil
+}

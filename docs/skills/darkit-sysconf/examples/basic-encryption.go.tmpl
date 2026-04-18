@@ -1,0 +1,161 @@
+package main
+
+import (
+	"log"
+	"os"
+
+	"github.com/darkit/sysconf"
+)
+
+// 基础加密使用示例
+// 展示如何启用 ChaCha20-Poly1305 加密保护配置
+
+const sensitiveConfig = `
+app:
+  name: "SecureApp"
+  version: "1.0.0"
+
+database:
+  host: "production-db.example.com"
+  port: 5432
+  username: "admin"
+  password: "super-secret-password"  # 将被加密存储
+  database: "prod_db"
+
+api:
+  endpoint: "https://api.example.com"
+  api_key: "sk-1234567890abcdefghijklmnop"  # 将被加密存储
+  secret: "my-api-secret"  # 将被加密存储
+
+oauth:
+  client_id: "oauth-client-id"
+  client_secret: "oauth-client-secret-key"  # 将被加密存储
+
+jwt:
+  signing_key: "jwt-signing-secret-key"  # 将被加密存储
+`
+
+func main() {
+	log.Println("=== 配置加密基础示例 ===\n")
+
+	// 1. 设置加密密钥
+	// 生产环境应该从密钥管理服务获取，不要硬编码！
+	encryptionKey := "your-32-byte-secret-encryption-key!"
+
+	log.Println("⚠️  注意: 生产环境应该从环境变量或密钥管理服务获取密钥")
+	log.Println("示例: encryptionKey := os.Getenv(\"CONFIG_ENCRYPTION_KEY\")\n")
+
+	// 2. 创建加密配置实例
+	log.Println("1. 创建加密配置实例...")
+	cfg, err := sysconf.New(
+		sysconf.WithPath("./encrypted-configs"),
+		sysconf.WithName("secure-config"),
+		sysconf.WithMode("yaml"),
+		sysconf.WithContent(sensitiveConfig),
+		sysconf.WithEncryption(encryptionKey), // 启用加密
+	)
+	if err != nil {
+		log.Fatal("配置初始化失败:", err)
+	}
+	log.Println("✅ 加密配置实例创建成功")
+
+	// 3. 设置敏感配置（自动加密）
+	log.Println("\n2. 设置敏感配置（自动加密）...")
+	sensitiveData := map[string]any{
+		"database.password":   "new-super-secret-password",
+		"api.api_key":         "sk-new-api-key-9876543210",
+		"oauth.client_secret": "new-oauth-secret",
+		"jwt.signing_key":     "new-jwt-signing-key",
+	}
+
+	for key, value := range sensitiveData {
+		if err := cfg.Set(key, value); err != nil {
+			log.Printf("❌ 设置 %s 失败: %v", key, err)
+		} else {
+			log.Printf("✅ 已加密设置: %s", key)
+		}
+	}
+
+	// 4. 读取配置（自动解密）
+	log.Println("\n3. 读取配置（自动解密）...")
+	dbPassword := cfg.GetString("database.password")
+	apiKey := cfg.GetString("api.api_key")
+	oauthSecret := cfg.GetString("oauth.client_secret")
+	jwtKey := cfg.GetString("jwt.signing_key")
+
+	log.Printf("数据库密码: %s", maskSecret(dbPassword))
+	log.Printf("API 密钥: %s", maskSecret(apiKey))
+	log.Printf("OAuth 密钥: %s", maskSecret(oauthSecret))
+	log.Printf("JWT 密钥: %s", maskSecret(jwtKey))
+
+	// 5. 演示配置文件已加密
+	log.Println("\n4. 验证配置文件已加密...")
+	if fileExists("./encrypted-configs/secure-config.yaml") {
+		log.Println("✅ 配置文件已创建: ./encrypted-configs/secure-config.yaml")
+		log.Println("   文件内容已加密，无法直接读取")
+	}
+
+	// 6. 演示使用相同密钥重新加载
+	log.Println("\n5. 演示使用相同密钥重新加载配置...")
+	cfg2, err := sysconf.New(
+		sysconf.WithPath("./encrypted-configs"),
+		sysconf.WithName("secure-config"),
+		sysconf.WithEncryption(encryptionKey), // 必须使用相同密钥
+	)
+	if err != nil {
+		log.Printf("❌ 重新加载失败: %v", err)
+	} else {
+		reloadedPassword := cfg2.GetString("database.password")
+		log.Println("✅ 成功重新加载加密配置")
+		log.Printf("   解密后的密码: %s", maskSecret(reloadedPassword))
+	}
+
+	// 7. 演示错误密钥无法解密
+	log.Println("\n6. 演示错误密钥无法解密...")
+	wrongKey := "wrong-encryption-key-32-bytes!!"
+	cfg3, err := sysconf.New(
+		sysconf.WithPath("./encrypted-configs"),
+		sysconf.WithName("secure-config"),
+		sysconf.WithEncryption(wrongKey),
+	)
+	if err != nil {
+		log.Printf("✅ 预期的错误: 密钥不匹配无法解密")
+	} else {
+		log.Printf("⚠️  使用错误密钥仍然创建了实例（配置可能损坏）")
+		_ = cfg3
+	}
+
+	// 清理
+	log.Println("\n7. 清理演示文件...")
+	cleanupDemoFiles()
+
+	log.Println("\n✅ 配置加密基础示例完成！")
+	log.Println("\n💡 重要提示:")
+	log.Println("   1. 生产环境密钥应从密钥管理服务获取")
+	log.Println("   2. 密钥长度至少 32 字节")
+	log.Println("   3. 定期轮换密钥")
+	log.Println("   4. 备份加密配置和密钥")
+}
+
+// maskSecret 遮盖敏感信息显示
+func maskSecret(secret string) string {
+	if len(secret) <= 8 {
+		return "****"
+	}
+	return secret[:4] + "****" + secret[len(secret)-4:]
+}
+
+// fileExists 检查文件是否存在
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return !os.IsNotExist(err)
+}
+
+// cleanupDemoFiles 清理演示文件
+func cleanupDemoFiles() {
+	if err := os.RemoveAll("./encrypted-configs"); err != nil {
+		log.Printf("清理文件失败: %v", err)
+	} else {
+		log.Println("✅ 清理完成")
+	}
+}

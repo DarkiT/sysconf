@@ -58,7 +58,7 @@ func main() {
 			validation.NewWebServerValidator(),
 			validation.NewRedisValidator(),
 		),
-		sysconf.WithWriteFlushDelay(0), // 立刻写盘，便于观察
+		sysconf.WithWriteDebounceDelay(1*time.Second),
 	)
 	if err != nil {
 		log.Fatalf("创建配置失败: %v", err)
@@ -76,10 +76,11 @@ func main() {
 		dump(cfg, "检测到文件变更后的配置")
 	})
 
-	// 4) 5秒后模拟配置更新（通过 Set 会触发写盘 + 监听）
-	time.AfterFunc(5*time.Second, func() {
+	// 4) 2秒后模拟配置更新（通过 Set 会触发写盘）
+	time.AfterFunc(2*time.Second, func() {
 		log.Println("\n--- 模拟写入新端口 9090（加密存盘） ---")
 		_ = cfg.Set("server.port", 9090)
+		// dump(cfg, "Set 写入后的配置")
 	})
 
 	// 10 秒展示窗口

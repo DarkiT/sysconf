@@ -1,0 +1,32 @@
+workspace:
+  launch:
+    # 定制云原生开发启动按钮
+    button:
+      name: 🚀 起飞
+      description: 💻 代码小火箭已就绪！准备好体验飞一般的开发速度了吗？程序猿们，系好安全带！
+    # CPU 核心数，默认为：8。仅对默认模版有效，如果有自定义云原生开发启动流水线，则此配置无效
+    cpus: 4
+    # 是否禁用默认按钮。默认为：false 表示不禁用。true 表示禁用
+    disabled: false
+    # 环境创建完是否自动打开 WebIDE，默认为 false
+    # 当开发环境中未安装 openssh(仅支持 WebIDE)：无论此参数配置为 true 还是 false，环境创建完都将自动打开 WebIDE
+    autoOpenWebIDE: false
+
+issue:
+  # 定制创建 issue 按钮
+  button:
+    # 按钮描述
+    description: 🔍 发现彩蛋了？不，那是bug！点我报告，程序员的头发已经做好了牺牲的准备！
+
+fork:
+  # 定制 fork 按钮
+  button:
+    # 按钮描述
+    description: ✨ 喜欢这代码？没关系，搬走不谢，记得给我留个星星当路费~
+
+# 仓库首页默认没有此按钮
+# 抄了么按钮出现条件：仓库首页右方简介增加 example 标签（推荐可作为模板或例子的仓库增加此按钮）
+copyRepo:
+  button:
+    name: 📋 使用模板
+    description: 📝 基于此模板创建您的项目，已内置最佳实践和完整结构

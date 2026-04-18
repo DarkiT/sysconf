@@ -17,16 +17,21 @@ import (
 // 返回值:
 //   - error: 序列化过程中遇到的错误，成功则为nil
 func (c *Config) Marshal(value any, prefix ...string) error {
+	c.mu.RLock()
 	if c.viper == nil {
+		c.mu.RUnlock()
 		return fmt.Errorf("viper instance not initialized")
 	}
+	c.mu.RUnlock()
 
 	var configMap map[string]any
 	if err := mapstructure.Decode(value, &configMap); err != nil {
 		return fmt.Errorf("failed to convert struct to map: %v", err)
 	}
 
+	c.mu.RLock()
 	configMap = deepMerge(c.snapshotAllSettings(), configMap)
+	c.mu.RUnlock()
 
 	if len(prefix) > 0 {
 		return c.setMapToViper(strings.Join(prefix, "."), configMap)
@@ -77,7 +82,7 @@ func (c *Config) setMapToViper(prefix string, m map[string]any) error {
 	return nil
 }
 
-// deepMerge 深度合并两个 map
+// deepMerge 深度合并两个 map（原地修改 m1）
 //
 // 参数:
 //   - m1: 目标映射，合并结果将存储在此
@@ -104,8 +109,8 @@ func deepMerge(m1, m2 map[string]any) map[string]any {
 			m2Map, ok2 := v2.(map[string]any)
 
 			if ok1 && ok2 {
-				// 递归合并这两个子 map
-				m1[k] = deepMerge(m1Map, m2Map)
+				// 原地递归合并这两个子 map
+				deepMerge(m1Map, m2Map)
 				continue
 			}
 		}

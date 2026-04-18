@@ -26,6 +26,17 @@ func (cm *CacheManager) CleanCache() {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
+	cm.cleanCacheUnsafe()
+}
+
+// cleanCacheUnsafe 清理缓存（调用者需已持有写锁）
+func (cm *CacheManager) cleanCacheUnsafe() {
+	if cm.maxCacheSize <= 0 {
+		cm.camelToSnakeCache = make(map[string]string)
+		cm.snakeToCamelCache = make(map[string]string)
+		return
+	}
+
 	if len(cm.camelToSnakeCache) > cm.maxCacheSize {
 		// 清理一半的缓存条目
 		newCache := make(map[string]string)
@@ -63,7 +74,7 @@ func (cm *CacheManager) SetCamelToSnake(key, value string) {
 	defer cm.mu.Unlock()
 
 	if len(cm.camelToSnakeCache) >= cm.maxCacheSize {
-		cm.CleanCache()
+		cm.cleanCacheUnsafe()
 	}
 	cm.camelToSnakeCache[key] = value
 }
@@ -74,7 +85,7 @@ func (cm *CacheManager) SetSnakeToCamel(key, value string) {
 	defer cm.mu.Unlock()
 
 	if len(cm.snakeToCamelCache) >= cm.maxCacheSize {
-		cm.CleanCache()
+		cm.cleanCacheUnsafe()
 	}
 	cm.snakeToCamelCache[key] = value
 }

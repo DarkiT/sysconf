@@ -1,6 +1,6 @@
 # Sysconf 验证器系统使用指南
 
-[![Go Version](https://img.shields.io/badge/go-1.23+-blue.svg)](https://golang.org/dl/)
+[![Go Version](https://img.shields.io/badge/go-1.24+-blue.svg)](https://golang.org/dl/)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/darkit/sysconf/blob/master/LICENSE)
 
 **Sysconf 验证器系统** 是一个企业级的配置验证框架，提供30+种内置验证规则、预定义验证器和灵活的自定义验证机制，确保配置数据的正确性和安全性。

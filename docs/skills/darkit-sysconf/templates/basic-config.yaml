@@ -1,0 +1,52 @@
+# Sysconf 基础配置文件模板
+# 此模板提供了常见的配置结构，可根据项目需求进行调整
+
+# 应用基础配置
+app:
+  name: "MyApp"                    # 应用名称
+  version: "1.0.0"                 # 应用版本
+  env: "development"               # 运行环境: development, test, production
+
+# 服务器配置
+server:
+  host: "localhost"                # 服务器主机地址
+  port: 8080                       # 服务器端口
+  timeout: "30s"                   # 请求超时时间
+  read_timeout: "15s"              # 读取超时
+  write_timeout: "15s"             # 写入超时
+  features:                        # 启用的功能特性
+    - http
+    - grpc
+
+# 数据库配置
+database:
+  host: "localhost"                # 数据库主机
+  port: 5432                       # 数据库端口
+  username: "postgres"             # 数据库用户名
+  password: ""                     # 数据库密码（建议通过环境变量设置）
+  database: "myapp"                # 数据库名称
+  type: "postgresql"               # 数据库类型: postgresql, mysql, sqlite
+  max_conns: 10                    # 最大连接数
+  timeout: "10s"                   # 连接超时
+  options:
+    sslmode: "disable"             # SSL 模式
+    timezone: "UTC"                # 时区设置
+
+# 日志配置
+logging:
+  level: "info"                    # 日志级别: debug, info, warn, error
+  format: "json"                   # 日志格式: json, text
+  path: "logs/app.log"             # 日志文件路径
+  max_size: 100                    # 单个日志文件最大大小（MB）
+  max_backups: 3                   # 保留的旧日志文件数量
+  max_age: 28                      # 日志文件保留天数
+
+# Redis 配置（可选）
+redis:
+  host: "localhost"
+  port: 6379
+  password: ""                     # Redis 密码（建议通过环境变量设置）
+  db: 0                            # Redis 数据库索引
+  timeout: "5s"
+  addresses:                       # Redis 集群地址列表
+    - "localhost:6379"

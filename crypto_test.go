@@ -25,6 +25,54 @@ func TestIsEncryptedNegative(t *testing.T) {
 	}
 }
 
+func TestEncryptDecryptRoundTripWithPassword(t *testing.T) {
+	crypto, err := NewDefaultCrypto("test-password")
+	if err != nil {
+		t.Fatalf("create crypto failed: %v", err)
+	}
+
+	plaintext := []byte("hello-world")
+	data, err := crypto.Encrypt(plaintext)
+	if err != nil {
+		t.Fatalf("encrypt failed: %v", err)
+	}
+
+	decrypted, err := crypto.Decrypt(data)
+	if err != nil {
+		t.Fatalf("decrypt failed: %v", err)
+	}
+	if string(decrypted) != string(plaintext) {
+		t.Fatalf("round trip mismatch: %s", decrypted)
+	}
+}
+
+func TestEncryptDecryptRoundTripWithEncodedKey(t *testing.T) {
+	crypto, err := NewDefaultCrypto("")
+	if err != nil {
+		t.Fatalf("create crypto failed: %v", err)
+	}
+
+	encodedKey := crypto.GetKey()
+	cryptoWithKey, err := NewDefaultCrypto(encodedKey)
+	if err != nil {
+		t.Fatalf("create crypto from key failed: %v", err)
+	}
+
+	plaintext := []byte("encoded-key")
+	data, err := cryptoWithKey.Encrypt(plaintext)
+	if err != nil {
+		t.Fatalf("encrypt failed: %v", err)
+	}
+
+	decrypted, err := cryptoWithKey.Decrypt(data)
+	if err != nil {
+		t.Fatalf("decrypt failed: %v", err)
+	}
+	if string(decrypted) != string(plaintext) {
+		t.Fatalf("round trip mismatch: %s", decrypted)
+	}
+}
+
 func TestEncryptFailurePropagation(t *testing.T) {
 	cfg := newTestConfig(t)
 	defer cfg.Close()

@@ -1,0 +1,239 @@
+package main
+
+import (
+	"fmt"
+	"log"
+
+	"github.com/darkit/sysconf"
+	"github.com/darkit/sysconf/validation"
+)
+
+// 使用预定义验证器示例
+// 展示 6 种开箱即用的验证器
+
+const configWithValidation = `
+app:
+  name: "ValidatedApp"
+  version: "1.0.0"
+  env: "production"
+
+server:
+  host: "localhost"
+  port: 8080
+  timeout: "30s"
+
+database:
+  host: "localhost"
+  port: 5432
+  username: "postgres"
+  password: "secret123"
+  database: "myapp"
+  type: "postgresql"
+  max_conns: 20
+  timeout: "10s"
+  options:
+    sslmode: "require"
+    timezone: "UTC"
+
+redis:
+  host: "localhost"
+  port: 6379
+  db: 0
+  timeout: "5s"
+  addresses:
+    - "localhost:6379"
+
+logging:
+  level: "info"
+  format: "json"
+  path: "logs/app.log"
+
+email:
+  smtp:
+    host: "smtp.example.com"
+    port: 587
+    username: "user@example.com"
+    password: "emailpass123"
+  from: "noreply@example.com"
+
+api:
+  base_url: "https://api.example.com"
+  timeout: 30
+  rate_limit:
+    enabled: true
+    requests_per_minute: 1000
+  auth:
+    api_key: "sk-1234567890abcdef"
+`
+
+func main() {
+	log.Println("=== 预定义验证器示例 ===\n")
+
+	// 创建配置实例，使用所有 6 种预定义验证器
+	log.Println("1. 创建配置实例并添加预定义验证器...")
+	cfg, err := sysconf.New(
+		sysconf.WithContent(configWithValidation),
+		sysconf.WithValidators(
+			validation.NewDatabaseValidator(),  // 数据库配置验证
+			validation.NewWebServerValidator(), // Web 服务器验证
+			validation.NewRedisValidator(),     // Redis 配置验证
+			validation.NewLogValidator(),       // 日志配置验证
+			validation.NewEmailValidator(),     // 邮件配置验证
+			validation.NewAPIValidator(),       // API 配置验证
+		),
+	)
+	if err != nil {
+		log.Fatal("配置初始化失败:", err)
+	}
+
+	log.Printf("✅ 配置实例创建成功，已注册 %d 个验证器\n", len(cfg.GetValidators()))
+
+	// 测试 DatabaseValidator
+	log.Println("\n2. 测试数据库配置验证器...")
+	testDatabaseValidator(cfg)
+
+	// 测试 WebServerValidator
+	log.Println("\n3. 测试 Web 服务器验证器...")
+	testWebServerValidator(cfg)
+
+	// 测试 RedisValidator
+	log.Println("\n4. 测试 Redis 验证器...")
+	testRedisValidator(cfg)
+
+	// 测试 LogValidator
+	log.Println("\n5. 测试日志配置验证器...")
+	testLogValidator(cfg)
+
+	// 测试 EmailValidator
+	log.Println("\n6. 测试邮件配置验证器...")
+	testEmailValidator(cfg)
+
+	// 测试 APIValidator
+	log.Println("\n7. 测试 API 配置验证器...")
+	testAPIValidator(cfg)
+
+	log.Println("\n✅ 所有预定义验证器测试完成！")
+}
+
+func testDatabaseValidator(cfg *sysconf.Config) {
+	// 有效配置
+	if err := cfg.Set("database.port", 5432); err != nil {
+		log.Printf("❌ 设置有效数据库端口失败: %v", err)
+	} else {
+		log.Println("✅ 设置有效数据库端口: 5432")
+	}
+
+	// 无效配置
+	if err := cfg.Set("database.port", 70000); err != nil {
+		log.Printf("✅ 验证器成功拦截无效端口: %v", err)
+	} else {
+		log.Println("❌ 验证器未能拦截无效端口")
+	}
+
+	// 测试数据库类型验证
+	if err := cfg.Set("database.type", "postgresql"); err != nil {
+		log.Printf("❌ 设置有效数据库类型失败: %v", err)
+	} else {
+		log.Println("✅ 设置有效数据库类型: postgresql")
+	}
+
+	if err := cfg.Set("database.type", "invaliddb"); err != nil {
+		log.Printf("✅ 验证器成功拦截无效数据库类型: %v", err)
+	}
+}
+
+func testWebServerValidator(cfg *sysconf.Config) {
+	// 有效主机名
+	if err := cfg.Set("server.host", "api.example.com"); err != nil {
+		log.Printf("❌ 设置有效主机名失败: %v", err)
+	} else {
+		log.Println("✅ 设置有效主机名: api.example.com")
+	}
+
+	// 有效端口
+	if err := cfg.Set("server.port", 443); err != nil {
+		log.Printf("❌ 设置有效端口失败: %v", err)
+	} else {
+		log.Println("✅ 设置有效端口: 443")
+	}
+
+	// 无效端口
+	if err := cfg.Set("server.port", 0); err != nil {
+		log.Printf("✅ 验证器成功拦截无效端口: %v", err)
+	}
+}
+
+func testRedisValidator(cfg *sysconf.Config) {
+	// 有效数据库索引
+	if err := cfg.Set("redis.db", 5); err != nil {
+		log.Printf("❌ 设置有效 Redis DB 失败: %v", err)
+	} else {
+		log.Println("✅ 设置有效 Redis DB: 5")
+	}
+
+	// 无效数据库索引
+	if err := cfg.Set("redis.db", 20); err != nil {
+		log.Printf("✅ 验证器成功拦截无效 Redis DB: %v", err)
+	}
+}
+
+func testLogValidator(cfg *sysconf.Config) {
+	// 有效日志级别
+	if err := cfg.Set("logging.level", "debug"); err != nil {
+		log.Printf("❌ 设置有效日志级别失败: %v", err)
+	} else {
+		log.Println("✅ 设置有效日志级别: debug")
+	}
+
+	// 无效日志级别
+	if err := cfg.Set("logging.level", "invalid"); err != nil {
+		log.Printf("✅ 验证器成功拦截无效日志级别: %v", err)
+	}
+
+	// 有效日志格式
+	if err := cfg.Set("logging.format", "text"); err != nil {
+		log.Printf("❌ 设置有效日志格式失败: %v", err)
+	} else {
+		log.Println("✅ 设置有效日志格式: text")
+	}
+}
+
+func testEmailValidator(cfg *sysconf.Config) {
+	// 有效邮箱
+	if err := cfg.Set("email.from", "admin@example.com"); err != nil {
+		log.Printf("❌ 设置有效邮箱失败: %v", err)
+	} else {
+		log.Println("✅ 设置有效发件人邮箱: admin@example.com")
+	}
+
+	// 无效邮箱
+	if err := cfg.Set("email.from", "invalid-email"); err != nil {
+		log.Printf("✅ 验证器成功拦截无效邮箱: %v", err)
+	}
+}
+
+func testAPIValidator(cfg *sysconf.Config) {
+	// 有效 URL
+	if err := cfg.Set("api.base_url", "https://new-api.example.com"); err != nil {
+		log.Printf("❌ 设置有效 API URL 失败: %v", err)
+	} else {
+		log.Println("✅ 设置有效 API URL: https://new-api.example.com")
+	}
+
+	// 无效 URL
+	if err := cfg.Set("api.base_url", "not-a-url"); err != nil {
+		log.Printf("✅ 验证器成功拦截无效 URL: %v", err)
+	}
+
+	// 有效超时
+	if err := cfg.Set("api.timeout", 60); err != nil {
+		log.Printf("❌ 设置有效超时失败: %v", err)
+	} else {
+		log.Println("✅ 设置有效 API 超时: 60")
+	}
+
+	// 无效超时
+	if err := cfg.Set("api.timeout", 500); err != nil {
+		log.Printf("✅ 验证器成功拦截无效超时: %v", err)
+	}
+}

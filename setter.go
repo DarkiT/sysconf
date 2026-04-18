@@ -1,19 +1,19 @@
 package sysconf
 
 import (
-	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/spf13/viper"
 
 	"github.com/darkit/sysconf/validation"
 )
 
 // Set 设置配置值
 func (c *Config) Set(key string, value any) error {
+	if c.closed.Load() {
+		return ErrAlreadyClosed
+	}
+
 	// 创建快照用于回滚
 	snap := c.createSnapshot()
 
@@ -30,6 +30,10 @@ func (c *Config) Set(key string, value any) error {
 
 	// 统一持锁，避免并发写导致的状态丢失
 	c.mu.Lock()
+	if c.closed.Load() {
+		c.mu.Unlock()
+		return ErrAlreadyClosed
+	}
 
 	// 复制当前数据，准备生成候选快照
 	currentData := c.loadData()
@@ -73,8 +77,8 @@ func (c *Config) Set(key string, value any) error {
 		return nil
 	}
 
-	// 标记待写入并按统一锁序写回配置文件
-	if err := c.flushPendingWritesWithPending(true); err != nil {
+	// 根据写入延迟策略触发写盘
+	if err := c.scheduleWrite(); err != nil {
 		c.restoreSnapshot(snap)
 		return fmt.Errorf("write failed and rolled back: %w", err)
 	}
@@ -89,11 +93,6 @@ func (c *Config) flushPendingWritesWithPending(markPending bool) error {
 	c.cacheBuildMu.Lock()
 	c.mu.Lock()
 	c.writeMu.Lock()
-	defer func() {
-		c.writeMu.Unlock()
-		c.mu.Unlock()
-		c.cacheBuildMu.Unlock()
-	}()
 
 	if markPending {
 		c.pendingWrites = true
@@ -101,51 +100,60 @@ func (c *Config) flushPendingWritesWithPending(markPending bool) error {
 
 	if !c.pendingWrites {
 		c.logger.Debugf("No pending changes, skipping write operation")
+		c.writeMu.Unlock()
+		c.mu.Unlock()
+		c.cacheBuildMu.Unlock()
 		return nil
 	}
 
 	c.logger.Infof("Writing config file")
 
-	// 在持锁后获取加密路径所需的配置快照，保证一致性并避免重入
-	var settingsSnapshot map[string]any
-	if c.cryptoOptions.Enabled {
-		settingsSnapshot = deepCloneMap(c.viper.AllSettings())
-	}
-
-	// 如果启用了加密，使用自定义的写入方法（使用预先获取的快照）
-	if c.cryptoOptions.Enabled {
-		if err := c.writeConfigFileWithData(settingsSnapshot); err != nil {
-			c.logger.Errorf("Failed to write encrypted config file: %v", err)
-			c.pendingWrites = false
-			return err
-		} else {
-			c.logger.Infof("Encrypted config file written successfully")
-		}
-	} else {
-		// 没有启用加密时，使用viper的标准写入方法
-		if err := c.viper.WriteConfig(); err != nil {
-			var configFileNotFoundError viper.ConfigFileNotFoundError
-			if errors.As(err, &configFileNotFoundError) {
-				configFile := filepath.Join(c.path, c.name+"."+c.mode)
-				c.logger.Infof("Config file does not exist, creating new file: %s", configFile)
-				if err := c.viper.WriteConfigAs(configFile); err != nil {
-					c.logger.Errorf("Failed to create config file: %v", err)
-					c.pendingWrites = false
-					return err
-				} else {
-					c.logger.Infof("Config file created successfully")
-				}
-			} else {
-				c.logger.Errorf("Failed to write config file: %v", err)
-				c.pendingWrites = false
-				return err
-			}
-		} else {
-			c.logger.Infof("Config file written successfully")
-		}
-	}
-
+	// 在持锁后获取配置快照，确保一致性
+	settingsSnapshot := c.snapshotAllSettings()
+	// 标记已消费当前待写入状态，允许新的写入在锁外排队
 	c.pendingWrites = false
+
+	// 释放读写锁，避免写盘阻塞写路径
+	c.mu.Unlock()
+	c.cacheBuildMu.Unlock()
+
+	if err := c.writeConfigFileWithData(settingsSnapshot); err != nil {
+		c.logger.Errorf("Failed to write config file: %v", err)
+		c.writeMu.Unlock()
+		return err
+	}
+	// 写入完成后再释放写入锁，保证写入顺序
+	c.writeMu.Unlock()
+	c.logger.Infof("Config file written successfully")
+	return nil
+}
+
+// scheduleWrite 根据 writeDelay 决定立即写盘或延迟合并写盘。
+func (c *Config) scheduleWrite() error {
+	return c.scheduleDebouncedWrite()
+}
+
+func (c *Config) scheduleDebouncedWrite() error {
+	if c.writeDelay <= 0 {
+		return c.flushPendingWritesWithPending(true)
+	}
+
+	// 标记待写入并重置定时器
+	c.cacheBuildMu.Lock()
+	c.mu.Lock()
+	c.pendingWrites = true
+	if c.writeTimer == nil {
+		c.writeTimer = time.AfterFunc(c.writeDelay, func() {
+			if err := c.flushPendingWritesWithPending(false); err != nil {
+				c.logger.Errorf("Failed to flush pending writes: %v", err)
+			}
+		})
+	} else {
+		c.writeTimer.Stop()
+		c.writeTimer.Reset(c.writeDelay)
+	}
+	c.mu.Unlock()
+	c.cacheBuildMu.Unlock()
 	return nil
 }
 
@@ -277,10 +285,134 @@ func (c *Config) validateSingleFieldWithStructValidator(validator *validation.St
 	return nil
 }
 
-// validateAllConfigsWithData 使用传入数据执行全量验证，避免重复持锁。
+// SetMultiple 批量设置多个配置值
+// 相比多次调用 Set，此方法减少了验证和文件写入开销
+//
+// 参数:
+//   - values: 键值对映射，键为配置路径，值为配置值
+//
+// 返回值:
+//   - error: 如果任何键值对验证失败，返回错误并回滚所有更改
+func (c *Config) SetMultiple(values map[string]any) error {
+	if c.closed.Load() {
+		return ErrAlreadyClosed
+	}
+
+	if len(values) == 0 {
+		return nil
+	}
+
+	// 创建快照用于回滚
+	snap := c.createSnapshot()
+
+	start := time.Now()
+	defer func() {
+		recordSetOperation(time.Since(start))
+	}()
+
+	// 验证所有键
+	for key := range values {
+		if key == "" {
+			c.logger.Errorf("Attempted to set config with empty key in batch operation")
+			recordErrorOperation()
+			return ErrInvalidKey
+		}
+	}
+
+	c.mu.Lock()
+	if c.closed.Load() {
+		c.mu.Unlock()
+		return ErrAlreadyClosed
+	}
+
+	// 复制当前数据
+	currentData := c.loadData()
+	newData := make(map[string]any, len(currentData)+len(values))
+
+	// 收集所有需要移除的键前缀
+	prefixes := make([]string, 0, len(values))
+	for key := range values {
+		prefixes = append(prefixes, key+".")
+	}
+
+	// 复制不受影响的数据
+	for k, v := range currentData {
+		shouldSkip := false
+		for key := range values {
+			if k == key {
+				shouldSkip = true
+				break
+			}
+		}
+		if !shouldSkip {
+			for _, prefix := range prefixes {
+				if strings.HasPrefix(k, prefix) {
+					shouldSkip = true
+					break
+				}
+			}
+		}
+		if !shouldSkip {
+			newData[k] = v
+		}
+	}
+
+	// 合并所有新值
+	for key, value := range values {
+		c.mergeValueIntoData(newData, key, value)
+	}
+
+	// 拷贝验证器切片
+	validators := make([]ConfigValidator, len(c.validators))
+	copy(validators, c.validators)
+
+	// 验证所有字段
+	for key, value := range values {
+		if err := c.validateSingleFieldWithData(key, value, validators, newData); err != nil {
+			c.logger.Errorf("Validation failed for key %s in batch operation: %v", key, err)
+			recordErrorOperation()
+			c.mu.Unlock()
+			c.restoreSnapshot(snap)
+			return fmt.Errorf("batch set failed at key '%s': %w", key, err)
+		}
+	}
+
+	// 验证通过后原子提交
+	c.storeData(newData)
+	for key, value := range values {
+		c.viper.Set(key, value)
+	}
+	c.mu.Unlock()
+
+	c.invalidateCache()
+
+	// 如果配置文件名称不存在则不保存文件
+	if c.name == "" {
+		c.logger.Debugf("Config file name not set, skipping write")
+		return nil
+	}
+
+	// 根据写入延迟策略触发写盘
+	if err := c.scheduleWrite(); err != nil {
+		c.restoreSnapshot(snap)
+		return fmt.Errorf("batch write failed and rolled back: %w", err)
+	}
+
+	c.logger.Infof("Batch set completed: %d keys updated", len(values))
+	return nil
+}
+
 // SetEnvPrefix 更新环境变量选项
 func (c *Config) SetEnvPrefix(prefix string) error {
+	if c.closed.Load() {
+		return ErrAlreadyClosed
+	}
+
 	c.mu.Lock()
+	if c.closed.Load() {
+		c.mu.Unlock()
+		return ErrAlreadyClosed
+	}
 	c.envOptions.Prefix = prefix
 	c.envOptions.Enabled = prefix != "" // 如果有前缀就启用环境变量
 	c.mu.Unlock()

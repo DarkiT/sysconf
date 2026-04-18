@@ -1,0 +1,114 @@
+package main
+
+import (
+	"log"
+	"os"
+
+	"github.com/darkit/sysconf"
+)
+
+// 环境变量配置示例
+// 展示如何使用环境变量覆盖配置文件
+
+const defaultConfig = `
+app:
+  name: "EnvApp"
+  version: "1.0.0"
+  env: "development"
+
+server:
+  host: "localhost"
+  port: 8080
+  timeout: "30s"
+
+database:
+  host: "localhost"
+  port: 5432
+  username: "postgres"
+  password: "default-password"
+  database: "myapp"
+`
+
+func main() {
+	log.Println("=== 环境变量配置示例 ===\n")
+
+	// 设置环境变量（在实际应用中，这些变量应该在系统环境中设置）
+	log.Println("1. 设置环境变量...")
+	os.Setenv("APP_SERVER_HOST", "production-server")
+	os.Setenv("APP_SERVER_PORT", "9000")
+	os.Setenv("APP_DATABASE_PASSWORD", "production-secret")
+	os.Setenv("APP_APP_ENV", "production")
+
+	// 演示智能大小写匹配
+	os.Setenv("app_server_timeout", "60s")    // 小写格式
+	os.Setenv("App_Database_Host", "prod-db") // 混合大小写
+
+	// 创建配置实例
+	log.Println("\n2. 创建配置实例...")
+	cfg, err := sysconf.New(
+		sysconf.WithPath("configs"),
+		sysconf.WithName("app"),
+		sysconf.WithContent(defaultConfig),
+		sysconf.WithEnv("APP"), // 启用环境变量，前缀为 APP
+	)
+	if err != nil {
+		log.Fatal("配置初始化失败:", err)
+	}
+
+	// 读取配置（环境变量会覆盖配置文件）
+	log.Println("\n3. 读取配置（环境变量优先）...")
+
+	// 服务器配置
+	serverHost := cfg.GetString("server.host")
+	serverPort := cfg.GetInt("server.port")
+	serverTimeout := cfg.GetDuration("server.timeout")
+
+	log.Printf("服务器主机: %s (来自 APP_SERVER_HOST)", serverHost)
+	log.Printf("服务器端口: %d (来自 APP_SERVER_PORT)", serverPort)
+	log.Printf("服务器超时: %v (来自 app_server_timeout，小写格式)", serverTimeout)
+
+	// 数据库配置
+	dbHost := cfg.GetString("database.host")
+	dbPassword := cfg.GetString("database.password")
+
+	log.Printf("\n数据库主机: %s (来自 App_Database_Host，混合大小写)", dbHost)
+	log.Printf("数据库密码: %s (来自 APP_DATABASE_PASSWORD)", maskPassword(dbPassword))
+
+	// 应用配置
+	appEnv := cfg.GetString("app.env")
+	log.Printf("\n应用环境: %s (来自 APP_APP_ENV)", appEnv)
+
+	// 演示配置优先级
+	log.Println("\n4. 配置优先级演示...")
+	log.Println("优先级顺序: 命令行参数 > 环境变量 > 配置文件 > 默认值")
+
+	log.Printf("app.name (无环境变量，使用配置文件): %s", cfg.GetString("app.name"))
+	log.Printf("app.version (无环境变量，使用配置文件): %s", cfg.GetString("app.version"))
+	log.Printf("server.port (有环境变量，覆盖配置文件): %d", serverPort)
+
+	// 演示支持的环境变量格式
+	log.Println("\n5. 支持的环境变量格式...")
+	log.Println("以下格式都会被识别（假设前缀为 APP）:")
+	log.Println("  - APP_SERVER_HOST=localhost      (标准大写格式)")
+	log.Println("  - app_server_host=localhost      (小写格式)")
+	log.Println("  - App_Server_Host=localhost      (混合大小写)")
+	log.Println("  - SERVER_PORT=8080               (无前缀格式)")
+
+	// 清理环境变量
+	os.Unsetenv("APP_SERVER_HOST")
+	os.Unsetenv("APP_SERVER_PORT")
+	os.Unsetenv("APP_DATABASE_PASSWORD")
+	os.Unsetenv("APP_APP_ENV")
+	os.Unsetenv("app_server_timeout")
+	os.Unsetenv("App_Database_Host")
+
+	log.Println("\n✅ 环境变量示例运行成功！")
+}
+
+// maskPassword 遮盖密码显示
+func maskPassword(password string) string {
+	if len(password) <= 4 {
+		return "****"
+	}
+	return password[:2] + "****" + password[len(password)-2:]
+}

@@ -72,7 +72,7 @@ func TestGetters(t *testing.T) {
 
 		// 默认值
 		assert.Equal(t, 0, c.GetInt("non_existent"))
-		assert.Equal(t, 200, c.GetInt("non_existent", "200")) // 注意这里必须用字符串
+		assert.Equal(t, 200, c.GetInt("non_existent", 200))
 	})
 
 	// 测试: GetBool 方法
@@ -82,7 +82,21 @@ func TestGetters(t *testing.T) {
 
 		// 默认值
 		assert.Equal(t, false, c.GetBool("non_existent"))
-		assert.Equal(t, true, c.GetBool("non_existent", "true")) // 注意这里必须用字符串
+		assert.Equal(t, true, c.GetBool("non_existent", true))
+	})
+
+	t.Run("PathGetter", func(t *testing.T) {
+		if err := c.Set("nested_map", map[string]interface{}{
+			"child": map[string]interface{}{
+				"grandchild": "嵌套值",
+			},
+		}); err != nil {
+			t.Fatalf("Set failed: %v", err)
+		}
+		assert.Equal(t, "嵌套值", c.GetStringPath("nested_map", "child", "grandchild"))
+		assert.Equal(t, 100, c.GetIntPath("direct_int"))
+		assert.Equal(t, true, c.GetBoolPath("direct_bool"))
+		assert.Equal(t, 0.0, c.GetFloatPath("not", "exists"))
 	})
 
 	// 测试: GetStringSlice 方法

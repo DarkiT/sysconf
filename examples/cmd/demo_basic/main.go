@@ -22,7 +22,7 @@ func main() {
 	}
 
 	host := cfg.GetString("database.host", "localhost")
-	port := cfg.GetInt("database.port", "5432")
+	port := cfg.GetInt("database.port", 5432)
 	timeout := cfg.GetDuration("database.timeout")
 	log.Printf("数据库: %s:%d timeout=%v", host, port, timeout)
 

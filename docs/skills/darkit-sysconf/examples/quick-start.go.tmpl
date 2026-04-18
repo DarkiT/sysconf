@@ -1,0 +1,52 @@
+package main
+
+import (
+	"log"
+
+	"github.com/darkit/sysconf"
+)
+
+// 5分钟快速开始示例
+// 这是最简单的 sysconf 使用方式
+
+func main() {
+	// 步骤 1: 定义默认配置
+	const defaultConfig = `
+app:
+  name: "QuickStartApp"
+  port: 8080
+database:
+  host: "localhost"
+  port: 5432
+`
+
+	// 步骤 2: 创建配置实例
+	cfg, err := sysconf.New(
+		sysconf.WithContent(defaultConfig), // 提供默认配置
+		sysconf.WithPath("configs"),        // 配置文件目录
+		sysconf.WithName("app"),            // 配置文件名
+		sysconf.WithEnv("APP"),             // 环境变量前缀
+	)
+	if err != nil {
+		log.Fatal("配置初始化失败:", err)
+	}
+
+	// 步骤 3: 读取配置
+	appName := cfg.GetString("app.name")
+	appPort := cfg.GetInt("app.port")
+	dbHost := cfg.GetString("database.host")
+	dbPort := cfg.GetInt("database.port")
+
+	log.Printf("应用: %s", appName)
+	log.Printf("应用端口: %d", appPort)
+	log.Printf("数据库: %s:%d", dbHost, dbPort)
+
+	// 步骤 4: 动态更新配置（可选）
+	if err := cfg.Set("app.port", 9090); err != nil {
+		log.Printf("更新配置失败: %v", err)
+	} else {
+		log.Printf("新端口: %d", cfg.GetInt("app.port"))
+	}
+
+	// 完成！你已经成功集成了 sysconf
+}

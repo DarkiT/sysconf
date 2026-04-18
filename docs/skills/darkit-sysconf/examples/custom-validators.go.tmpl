@@ -1,0 +1,279 @@
+package main
+
+import (
+	"fmt"
+	"log"
+
+	"github.com/darkit/sysconf"
+	"github.com/darkit/sysconf/validation"
+)
+
+// 自定义验证器示例
+// 展示如何创建和使用自定义验证器
+
+const customConfig = `
+company:
+  name: "创新科技有限公司"
+  tax_id: "123456789012345678"
+  industry: "technology"
+  employee_count: 150
+  founded_year: 2020
+
+product:
+  code: "AB123456"
+  name: "智能配置系统"
+  version: "1.2.3"
+  price: 99.99
+
+user:
+  username: "admin001"
+  email: "admin@example.com"
+  role: "admin"
+  age: 25
+`
+
+func main() {
+	log.Println("=== 自定义验证器示例 ===\n")
+
+	// 1. 创建公司信息验证器
+	log.Println("1. 创建公司信息验证器...")
+	companyValidator := createCompanyValidator()
+
+	// 2. 创建产品信息验证器
+	log.Println("2. 创建产品信息验证器...")
+	productValidator := createProductValidator()
+
+	// 3. 创建用户信息验证器
+	log.Println("3. 创建用户信息验证器...")
+	userValidator := createUserValidator()
+
+	// 4. 创建配置实例并添加自定义验证器
+	log.Println("\n4. 创建配置实例...")
+	cfg, err := sysconf.New(
+		sysconf.WithContent(customConfig),
+		sysconf.WithValidators(
+			companyValidator,
+			productValidator,
+			userValidator,
+		),
+	)
+	if err != nil {
+		log.Fatal("配置初始化失败:", err)
+	}
+
+	log.Printf("✅ 配置实例创建成功，已注册 %d 个验证器\n", len(cfg.GetValidators()))
+
+	// 5. 测试公司信息验证
+	log.Println("\n5. 测试公司信息验证...")
+	testCompanyValidation(cfg)
+
+	// 6. 测试产品信息验证
+	log.Println("\n6. 测试产品信息验证...")
+	testProductValidation(cfg)
+
+	// 7. 测试用户信息验证
+	log.Println("\n7. 测试用户信息验证...")
+	testUserValidation(cfg)
+
+	// 8. 演示函数式验证器
+	log.Println("\n8. 添加函数式验证器...")
+	demonstrateFunctionValidator(cfg)
+
+	// 9. 演示复合验证器
+	log.Println("\n9. 演示复合验证器...")
+	demonstrateCompositeValidator(cfg)
+
+	log.Println("\n✅ 所有自定义验证器测试完成！")
+}
+
+// createCompanyValidator 创建公司信息验证器
+func createCompanyValidator() *validation.RuleValidator {
+	validator := validation.NewRuleValidator("公司信息验证器")
+
+	// 公司名称：必填，非空
+	validator.AddRule("company.name", validation.Required("公司名称不能为空"))
+
+	// 税务登记号：必须是18位数字
+	validator.AddRule("company.tax_id", validation.Pattern(`^\d{18}$`, "税务登记号必须是18位数字"))
+
+	// 行业：枚举值
+	validator.AddStringRule("company.industry", "enum:technology,finance,healthcare,education,retail")
+
+	// 员工数量：范围验证
+	validator.AddStringRule("company.employee_count", "range:1,10000")
+
+	// 成立年份：范围验证
+	validator.AddStringRule("company.founded_year", "range:1900,2100")
+
+	return validator
+}
+
+// createProductValidator 创建产品信息验证器
+func createProductValidator() *validation.RuleValidator {
+	validator := validation.NewRuleValidator("产品信息验证器")
+
+	// 产品代码：自定义格式（两个大写字母 + 6位数字）
+	validator.AddRule("product.code", validation.Pattern(`^[A-Z]{2}\d{6}$`, "产品代码格式: 两个大写字母+6位数字"))
+
+	// 产品名称：必填
+	validator.AddRule("product.name", validation.Required("产品名称不能为空"))
+
+	// 版本号：语义化版本格式
+	validator.AddRule("product.version", validation.Pattern(`^\d+\.\d+\.\d+$`, "版本号格式: x.y.z"))
+
+	// 价格：范围验证
+	validator.AddStringRule("product.price", "range:0,9999")
+
+	return validator
+}
+
+// createUserValidator 创建用户信息验证器
+func createUserValidator() *validation.RuleValidator {
+	validator := validation.NewRuleValidator("用户信息验证器")
+
+	// 用户名：字母数字
+	validator.AddStringRule("user.username", "alphanum")
+
+	// 邮箱：邮箱格式
+	validator.AddStringRule("user.email", "email")
+
+	// 角色：枚举值
+	validator.AddStringRule("user.role", "enum:admin,user,guest")
+
+	// 年龄：范围验证
+	validator.AddStringRule("user.age", "range:1,150")
+
+	return validator
+}
+
+func testCompanyValidation(cfg *sysconf.Config) {
+	// 测试有效公司名称
+	if err := cfg.Set("company.name", "新公司名称"); err != nil {
+		log.Printf("❌ 设置有效公司名称失败: %v", err)
+	} else {
+		log.Println("✅ 设置有效公司名称")
+	}
+
+	// 测试有效税号
+	if err := cfg.Set("company.tax_id", "987654321098765432"); err != nil {
+		log.Printf("❌ 设置有效税号失败: %v", err)
+	} else {
+		log.Println("✅ 设置有效税号: 987654321098765432")
+	}
+
+	// 测试无效税号
+	if err := cfg.Set("company.tax_id", "12345"); err != nil {
+		log.Printf("✅ 验证器成功拦截无效税号: %v", err)
+	}
+
+	// 测试有效行业
+	if err := cfg.Set("company.industry", "finance"); err != nil {
+		log.Printf("❌ 设置有效行业失败: %v", err)
+	} else {
+		log.Println("✅ 设置有效行业: finance")
+	}
+
+	// 测试无效行业
+	if err := cfg.Set("company.industry", "invalid_industry"); err != nil {
+		log.Printf("✅ 验证器成功拦截无效行业: %v", err)
+	}
+}
+
+func testProductValidation(cfg *sysconf.Config) {
+	// 测试有效产品代码
+	if err := cfg.Set("product.code", "XY789012"); err != nil {
+		log.Printf("❌ 设置有效产品代码失败: %v", err)
+	} else {
+		log.Println("✅ 设置有效产品代码: XY789012")
+	}
+
+	// 测试无效产品代码
+	if err := cfg.Set("product.code", "invalid"); err != nil {
+		log.Printf("✅ 验证器成功拦截无效产品代码: %v", err)
+	}
+
+	// 测试有效版本号
+	if err := cfg.Set("product.version", "2.0.1"); err != nil {
+		log.Printf("❌ 设置有效版本号失败: %v", err)
+	} else {
+		log.Println("✅ 设置有效版本号: 2.0.1")
+	}
+
+	// 测试无效版本号
+	if err := cfg.Set("product.version", "v2.0"); err != nil {
+		log.Printf("✅ 验证器成功拦截无效版本号: %v", err)
+	}
+}
+
+func testUserValidation(cfg *sysconf.Config) {
+	// 测试有效用户名
+	if err := cfg.Set("user.username", "user123"); err != nil {
+		log.Printf("❌ 设置有效用户名失败: %v", err)
+	} else {
+		log.Println("✅ 设置有效用户名: user123")
+	}
+
+	// 测试无效用户名（包含特殊字符）
+	if err := cfg.Set("user.username", "user@123"); err != nil {
+		log.Printf("✅ 验证器成功拦截无效用户名: %v", err)
+	}
+
+	// 测试有效邮箱
+	if err := cfg.Set("user.email", "newuser@example.com"); err != nil {
+		log.Printf("❌ 设置有效邮箱失败: %v", err)
+	} else {
+		log.Println("✅ 设置有效邮箱: newuser@example.com")
+	}
+
+	// 测试无效邮箱
+	if err := cfg.Set("user.email", "invalid-email"); err != nil {
+		log.Printf("✅ 验证器成功拦截无效邮箱: %v", err)
+	}
+}
+
+func demonstrateFunctionValidator(cfg *sysconf.Config) {
+	// 添加函数式验证器
+	cfg.AddValidateFunc(func(config map[string]any) error {
+		// 示例：验证产品价格不能高于员工数量（荒谬的业务规则，仅用于演示）
+		productMap, ok1 := config["product"].(map[string]any)
+		companyMap, ok2 := config["company"].(map[string]any)
+
+		if ok1 && ok2 {
+			price, _ := productMap["price"].(float64)
+			employeeCount, _ := companyMap["employee_count"].(int)
+
+			if price > float64(employeeCount) {
+				return fmt.Errorf("产品价格 (%.2f) 不能高于员工数量 (%d) - 这是一个示例业务规则", price, employeeCount)
+			}
+		}
+
+		return nil
+	})
+
+	log.Println("✅ 添加函数式验证器成功")
+
+	// 测试函数式验证器
+	if err := cfg.Set("product.price", 50.0); err != nil {
+		log.Printf("❌ 设置价格失败: %v", err)
+	} else {
+		log.Println("✅ 设置价格成功: 50.0（低于员工数）")
+	}
+
+	// 注意：这里不测试无效情况，因为会触发全量验证
+}
+
+func demonstrateCompositeValidator(cfg *sysconf.Config) {
+	// 创建一个包含多个验证器的复合验证器
+	composite := validation.NewCompositeValidator(
+		"业务配置综合验证器",
+		createCompanyValidator(),
+		createProductValidator(),
+		createUserValidator(),
+	)
+
+	log.Printf("✅ 创建复合验证器成功，包含 %d 个子验证器\n", len(composite.GetValidators()))
+	log.Printf("   复合验证器名称: %s", composite.GetName())
+
+	// 在实际应用中，你可以这样使用：
+	// cfg.AddValidator(composite)
+}

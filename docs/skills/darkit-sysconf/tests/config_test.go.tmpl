@@ -1,0 +1,256 @@
+package config
+
+import (
+	"os"
+	"testing"
+	"time"
+
+	"github.com/darkit/sysconf"
+	"github.com/darkit/sysconf/validation"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// 测试配置内容
+const testConfig = `
+app:
+  name: "TestApp"
+  version: "1.0.0"
+  env: "test"
+
+server:
+  host: "localhost"
+  port: 8080
+  timeout: "30s"
+  features:
+    - http
+    - grpc
+
+database:
+  host: "localhost"
+  port: 5432
+  username: "testuser"
+  password: "testpass"
+  database: "testdb"
+  type: "postgresql"
+  max_conns: 10
+  timeout: "10s"
+  options:
+    sslmode: "disable"
+    timezone: "UTC"
+`
+
+// TestConfigInitialization 测试配置初始化
+func TestConfigInitialization(t *testing.T) {
+	cfg, err := sysconf.New(
+		sysconf.WithContent(testConfig),
+	)
+	require.NoError(t, err, "配置初始化应该成功")
+	require.NotNil(t, cfg, "配置实例不应为空")
+}
+
+// TestConfigUnmarshal 测试配置解析
+func TestConfigUnmarshal(t *testing.T) {
+	cfg, err := sysconf.New(
+		sysconf.WithContent(testConfig),
+	)
+	require.NoError(t, err)
+
+	var config AppConfig
+	err = cfg.Unmarshal(&config)
+	require.NoError(t, err, "配置解析应该成功")
+
+	// 验证配置值
+	assert.Equal(t, "TestApp", config.App.Name)
+	assert.Equal(t, "1.0.0", config.App.Version)
+	assert.Equal(t, "test", config.App.Env)
+	assert.Equal(t, 8080, config.Server.Port)
+	assert.Equal(t, "localhost", config.Database.Host)
+}
+
+// TestConfigGetters 测试配置读取方法
+func TestConfigGetters(t *testing.T) {
+	cfg, err := sysconf.New(
+		sysconf.WithContent(testConfig),
+	)
+	require.NoError(t, err)
+
+	// 测试字符串读取
+	assert.Equal(t, "TestApp", cfg.GetString("app.name"))
+	assert.Equal(t, "localhost", cfg.GetString("server.host"))
+
+	// 测试整数读取
+	assert.Equal(t, 8080, cfg.GetInt("server.port"))
+	assert.Equal(t, 5432, cfg.GetInt("database.port"))
+
+	// 测试时间持续时间读取
+	assert.Equal(t, 30*time.Second, cfg.GetDuration("server.timeout"))
+
+	// 测试切片读取
+	features := cfg.GetStringSlice("server.features")
+	assert.Equal(t, 2, len(features))
+	assert.Contains(t, features, "http")
+	assert.Contains(t, features, "grpc")
+}
+
+// TestConfigSetters 测试配置写入
+func TestConfigSetters(t *testing.T) {
+	cfg, err := sysconf.New(
+		sysconf.WithContent(testConfig),
+	)
+	require.NoError(t, err)
+
+	// 测试设置字符串
+	err = cfg.Set("app.name", "UpdatedApp")
+	require.NoError(t, err)
+	assert.Equal(t, "UpdatedApp", cfg.GetString("app.name"))
+
+	// 测试设置整数
+	err = cfg.Set("server.port", 9090)
+	require.NoError(t, err)
+	assert.Equal(t, 9090, cfg.GetInt("server.port"))
+}
+
+// TestConfigValidation 测试配置验证
+func TestConfigValidation(t *testing.T) {
+	cfg, err := sysconf.New(
+		sysconf.WithContent(testConfig),
+		sysconf.WithValidators(
+			validation.NewWebServerValidator(),
+			validation.NewDatabaseValidator(),
+		),
+	)
+	require.NoError(t, err)
+
+	// 测试有效配置
+	err = cfg.Set("server.port", 8080)
+	assert.NoError(t, err, "有效端口应该被接受")
+
+	// 测试无效配置
+	err = cfg.Set("server.port", 70000)
+	assert.Error(t, err, "无效端口应该被拒绝")
+}
+
+// TestEnvironmentVariables 测试环境变量
+func TestEnvironmentVariables(t *testing.T) {
+	// 设置测试环境变量
+	os.Setenv("TEST_SERVER_HOST", "env-host")
+	os.Setenv("TEST_SERVER_PORT", "9000")
+	defer func() {
+		os.Unsetenv("TEST_SERVER_HOST")
+		os.Unsetenv("TEST_SERVER_PORT")
+	}()
+
+	cfg, err := sysconf.New(
+		sysconf.WithContent(testConfig),
+		sysconf.WithEnv("TEST"),
+	)
+	require.NoError(t, err)
+
+	// 环境变量应该覆盖配置文件
+	assert.Equal(t, "env-host", cfg.GetString("server.host"))
+	assert.Equal(t, 9000, cfg.GetInt("server.port"))
+}
+
+// TestConfigDefaults 测试默认值
+func TestConfigDefaults(t *testing.T) {
+	cfg, err := sysconf.New(
+		sysconf.WithContent(testConfig),
+	)
+	require.NoError(t, err)
+
+	// 测试不存在的键使用默认值
+	assert.Equal(t, "default", cfg.GetString("nonexistent.key", "default"))
+	assert.Equal(t, 999, cfg.GetInt("nonexistent.key", "999"))
+}
+
+// TestConfigConcurrency 测试并发安全
+func TestConfigConcurrency(t *testing.T) {
+	cfg, err := sysconf.New(
+		sysconf.WithContent(testConfig),
+	)
+	require.NoError(t, err)
+
+	// 并发读写测试
+	done := make(chan bool, 100)
+
+	// 启动多个 goroutine 读取配置
+	for i := 0; i < 50; i++ {
+		go func() {
+			for j := 0; j < 100; j++ {
+				_ = cfg.GetString("app.name")
+				_ = cfg.GetInt("server.port")
+			}
+			done <- true
+		}()
+	}
+
+	// 启动多个 goroutine 写入配置
+	for i := 0; i < 50; i++ {
+		go func(id int) {
+			for j := 0; j < 100; j++ {
+				_ = cfg.Set("test.key", id)
+			}
+			done <- true
+		}(i)
+	}
+
+	// 等待所有 goroutine 完成
+	for i := 0; i < 100; i++ {
+		<-done
+	}
+
+	// 如果没有 panic 或 race condition，测试通过
+	assert.True(t, true, "并发测试应该通过")
+}
+
+// TestConfigIsSet 测试键存在检查
+func TestConfigIsSet(t *testing.T) {
+	cfg, err := sysconf.New(
+		sysconf.WithContent(testConfig),
+	)
+	require.NoError(t, err)
+
+	assert.True(t, cfg.IsSet("app.name"))
+	assert.True(t, cfg.IsSet("server.port"))
+	assert.False(t, cfg.IsSet("nonexistent.key"))
+}
+
+// TestConfigKeys 测试获取所有键
+func TestConfigKeys(t *testing.T) {
+	cfg, err := sysconf.New(
+		sysconf.WithContent(testConfig),
+	)
+	require.NoError(t, err)
+
+	keys := cfg.Keys()
+	assert.NotEmpty(t, keys, "配置键列表不应为空")
+	assert.Contains(t, keys, "app")
+	assert.Contains(t, keys, "server")
+	assert.Contains(t, keys, "database")
+}
+
+// BenchmarkConfigRead 基准测试：配置读取性能
+func BenchmarkConfigRead(b *testing.B) {
+	cfg, _ := sysconf.New(
+		sysconf.WithContent(testConfig),
+	)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = cfg.GetString("app.name")
+	}
+}
+
+// BenchmarkConfigConcurrentRead 基准测试：并发读取性能
+func BenchmarkConfigConcurrentRead(b *testing.B) {
+	cfg, _ := sysconf.New(
+		sysconf.WithContent(testConfig),
+	)
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_ = cfg.GetString("app.name")
+		}
+	})
+}

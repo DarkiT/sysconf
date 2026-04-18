@@ -1,6 +1,7 @@
 package sysconf
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -108,11 +109,29 @@ func TestSet(t *testing.T) {
 		assert.Equal(t, ErrInvalidKey, err)
 	})
 
+	// 测试: 关闭后禁止写入
+	t.Run("关闭后禁止写入", func(t *testing.T) {
+		c, err := New(
+			WithPath(tempDir),
+			WithName("closed_write"),
+			WithMode("yaml"),
+		)
+		if !assert.NoError(t, err, "关闭写入测试配置初始化应该成功") {
+			t.FailNow()
+		}
+
+		assert.NoError(t, c.Close())
+		assert.ErrorIs(t, c.Set("k", "v"), ErrAlreadyClosed)
+		assert.ErrorIs(t, c.SetMultiple(map[string]any{"k": "v"}), ErrAlreadyClosed)
+		assert.ErrorIs(t, c.SetEnvPrefix("APP"), ErrAlreadyClosed)
+	})
+
 	// 测试: 延迟写入
 	t.Run("延迟写入", func(t *testing.T) {
 		c, err := New(
 			WithPath(tempDir),
 			WithName("test_delayed_write"),
+			WithWriteDebounceDelay(3*time.Second),
 		)
 		if !assert.NoError(t, err, "延迟写入配置初始化应该成功") {
 			t.FailNow()
@@ -124,6 +143,11 @@ func TestSet(t *testing.T) {
 
 		// 立即读取
 		assert.Equal(t, "延迟写入值", c.GetString("delayed_key"))
+
+		configFile := filepath.Join(tempDir, "test_delayed_write.yaml")
+		if data, err := os.ReadFile(configFile); err == nil {
+			assert.False(t, bytes.Contains(data, []byte("delayed_key")), "延迟写入前不应落盘")
+		}
 
 		// 等待写入
 		time.Sleep(4 * time.Second)
@@ -170,6 +194,7 @@ func TestSet(t *testing.T) {
 			WithPath(roDir),
 			WithName("rollback_write"),
 			WithMode("yaml"),
+			WithWriteDebounceDelay(0),
 		)
 		if !assert.NoError(t, err) {
 			t.FailNow()

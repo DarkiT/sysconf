@@ -1,0 +1,172 @@
+package main
+
+import (
+	"log"
+	"sync/atomic"
+
+	"github.com/darkit/sysconf"
+	"github.com/darkit/sysconf/validation"
+)
+
+// defaultConfig 默认配置内容（嵌入式 YAML）
+const defaultConfig = `
+app:
+  name: "MyApp"
+  version: "1.0.0"
+  env: "development"
+
+server:
+  host: "localhost"
+  port: 8080
+  timeout: "30s"
+
+database:
+  host: "localhost"
+  port: 5432
+  username: "postgres"
+  password: "secret"
+  database: "myapp"
+  type: "postgresql"
+  max_conns: 10
+  timeout: "10s"
+  options:
+    sslmode: "disable"
+    timezone: "UTC"
+
+logging:
+  level: "info"
+  format: "json"
+  path: "logs/app.log"
+`
+
+// Application 应用主结构
+type Application struct {
+	config atomic.Value  // 存储 *AppConfig，线程安全
+	cfg    *sysconf.Config
+}
+
+// NewApplication 创建应用实例
+func NewApplication() (*Application, error) {
+	// 创建配置实例
+	cfg, err := sysconf.New(
+		sysconf.WithPath("configs"),           // 配置文件目录
+		sysconf.WithName("app"),               // 配置文件名
+		sysconf.WithMode("yaml"),              // 配置格式
+		sysconf.WithContent(defaultConfig),    // 默认配置内容
+		sysconf.WithEnv("APP"),                // 环境变量前缀（支持智能大小写匹配）
+
+		// 可选：添加验证器
+		sysconf.WithValidators(
+			validation.NewDatabaseValidator(),  // 数据库配置验证
+			validation.NewWebServerValidator(), // Web 服务器验证
+			validation.NewLogValidator(),       // 日志配置验证
+		),
+
+		// 可选：添加自定义验证
+		sysconf.WithValidateFunc(func(config map[string]any) error {
+			// 在此添加自定义验证逻辑
+			return nil
+		}),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	app := &Application{
+		cfg: cfg,
+	}
+
+	// 加载初始配置
+	if err := app.loadConfig(); err != nil {
+		return nil, err
+	}
+
+	return app, nil
+}
+
+// loadConfig 加载配置到结构体
+func (app *Application) loadConfig() error {
+	var config AppConfig
+	if err := app.cfg.Unmarshal(&config); err != nil {
+		return err
+	}
+
+	// 可选：执行自定义验证
+	if err := config.Validate(); err != nil {
+		return err
+	}
+
+	// 原子性更新配置
+	app.config.Store(&config)
+	log.Printf("配置加载成功: %s v%s (%s)",
+		config.App.Name,
+		config.App.Version,
+		config.App.Env,
+	)
+
+	return nil
+}
+
+// GetConfig 线程安全地获取当前配置
+func (app *Application) GetConfig() *AppConfig {
+	return app.config.Load().(*AppConfig)
+}
+
+// Run 运行应用
+func (app *Application) Run() error {
+	config := app.GetConfig()
+
+	log.Printf("启动应用: %s", config.App.Name)
+	log.Printf("服务器地址: %s:%d", config.Server.Host, config.Server.Port)
+	log.Printf("数据库: %s@%s:%d/%s",
+		config.Database.Username,
+		config.Database.Host,
+		config.Database.Port,
+		config.Database.Database,
+	)
+
+	// 在此添加应用启动逻辑
+
+	return nil
+}
+
+// 可选：启用配置热重载
+func (app *Application) WatchConfig() {
+	app.cfg.Watch(func() {
+		log.Println("检测到配置变化，重新加载...")
+		if err := app.loadConfig(); err != nil {
+			log.Printf("配置重载失败: %v", err)
+			return
+		}
+		log.Println("配置重载成功")
+
+		// 在此处理配置变化后的逻辑
+		app.onConfigChange()
+	})
+}
+
+// onConfigChange 配置变化处理
+func (app *Application) onConfigChange() {
+	config := app.GetConfig()
+	// 根据新配置更新应用行为
+	log.Printf("新配置: 端口=%d, 日志级别=%s",
+		config.Server.Port,
+		config.Logging.Level,
+	)
+}
+
+func main() {
+	// 创建应用
+	app, err := NewApplication()
+	if err != nil {
+		log.Fatalf("应用初始化失败: %v", err)
+	}
+
+	// 可选：启用配置热重载
+	// app.WatchConfig()
+
+	// 运行应用
+	if err := app.Run(); err != nil {
+		log.Fatalf("应用运行失败: %v", err)
+	}
+}
