@@ -3,7 +3,7 @@ module github.com/darkit/sysconf
 go 1.25.0
 
 require (
-	github.com/fsnotify/fsnotify v1.9.0
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/spf13/cast v1.10.0
 	github.com/spf13/pflag v1.0.10
