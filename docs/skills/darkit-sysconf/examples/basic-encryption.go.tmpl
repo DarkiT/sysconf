@@ -76,12 +76,12 @@ func main() {
 		}
 	}
 
-	// 4. 读取配置（自动解密）
+	// 4. 读取配置（自动解密，使用 Go 1.25+ 泛型 API）
 	log.Println("\n3. 读取配置（自动解密）...")
-	dbPassword := cfg.GetString("database.password")
-	apiKey := cfg.GetString("api.api_key")
-	oauthSecret := cfg.GetString("oauth.client_secret")
-	jwtKey := cfg.GetString("jwt.signing_key")
+	dbPassword := cfg.GetAs[string]("database.password", "")
+	apiKey := cfg.GetAs[string]("api.api_key", "")
+	oauthSecret := cfg.GetAs[string]("oauth.client_secret", "")
+	jwtKey := cfg.GetAs[string]("jwt.signing_key", "")
 
 	log.Printf("数据库密码: %s", maskSecret(dbPassword))
 	log.Printf("API 密钥: %s", maskSecret(apiKey))
@@ -105,7 +105,7 @@ func main() {
 	if err != nil {
 		log.Printf("❌ 重新加载失败: %v", err)
 	} else {
-		reloadedPassword := cfg2.GetString("database.password")
+		reloadedPassword := cfg2.GetAs[string]("database.password", "")
 		log.Println("✅ 成功重新加载加密配置")
 		log.Printf("   解密后的密码: %s", maskSecret(reloadedPassword))
 	}

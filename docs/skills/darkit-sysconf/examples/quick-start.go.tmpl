@@ -31,11 +31,11 @@ database:
 		log.Fatal("配置初始化失败:", err)
 	}
 
-	// 步骤 3: 读取配置
-	appName := cfg.GetString("app.name")
-	appPort := cfg.GetInt("app.port")
-	dbHost := cfg.GetString("database.host")
-	dbPort := cfg.GetInt("database.port")
+	// 步骤 3: 读取配置（Go 1.25+ 泛型 API）
+	appName := cfg.GetAs[string]("app.name", "DefaultApp")
+	appPort := cfg.GetAs[int]("app.port", 8080)
+	dbHost := cfg.GetAs[string]("database.host", "localhost")
+	dbPort := cfg.GetAs[int]("database.port", 5432)
 
 	log.Printf("应用: %s", appName)
 	log.Printf("应用端口: %d", appPort)
@@ -45,7 +45,7 @@ database:
 	if err := cfg.Set("app.port", 9090); err != nil {
 		log.Printf("更新配置失败: %v", err)
 	} else {
-		log.Printf("新端口: %d", cfg.GetInt("app.port"))
+		log.Printf("新端口: %d", cfg.GetAs[int]("app.port"))
 	}
 
 	// 完成！你已经成功集成了 sysconf

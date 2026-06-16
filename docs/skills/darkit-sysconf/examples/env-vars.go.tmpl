@@ -59,8 +59,8 @@ func main() {
 	log.Println("\n3. 读取配置（环境变量优先）...")
 
 	// 服务器配置
-	serverHost := cfg.GetString("server.host")
-	serverPort := cfg.GetInt("server.port")
+	serverHost := cfg.GetAs[string]("server.host")
+	serverPort := cfg.GetAs[int]("server.port")
 	serverTimeout := cfg.GetDuration("server.timeout")
 
 	log.Printf("服务器主机: %s (来自 APP_SERVER_HOST)", serverHost)
@@ -68,22 +68,22 @@ func main() {
 	log.Printf("服务器超时: %v (来自 app_server_timeout，小写格式)", serverTimeout)
 
 	// 数据库配置
-	dbHost := cfg.GetString("database.host")
-	dbPassword := cfg.GetString("database.password")
+	dbHost := cfg.GetAs[string]("database.host")
+	dbPassword := cfg.GetAs[string]("database.password")
 
 	log.Printf("\n数据库主机: %s (来自 App_Database_Host，混合大小写)", dbHost)
 	log.Printf("数据库密码: %s (来自 APP_DATABASE_PASSWORD)", maskPassword(dbPassword))
 
 	// 应用配置
-	appEnv := cfg.GetString("app.env")
+	appEnv := cfg.GetAs[string]("app.env")
 	log.Printf("\n应用环境: %s (来自 APP_APP_ENV)", appEnv)
 
 	// 演示配置优先级
 	log.Println("\n4. 配置优先级演示...")
 	log.Println("优先级顺序: 命令行参数 > 环境变量 > 配置文件 > 默认值")
 
-	log.Printf("app.name (无环境变量，使用配置文件): %s", cfg.GetString("app.name"))
-	log.Printf("app.version (无环境变量，使用配置文件): %s", cfg.GetString("app.version"))
+	log.Printf("app.name (无环境变量，使用配置文件): %s", cfg.GetAs[string]("app.name"))
+	log.Printf("app.version (无环境变量，使用配置文件): %s", cfg.GetAs[string]("app.version"))
 	log.Printf("server.port (有环境变量，覆盖配置文件): %d", serverPort)
 
 	// 演示支持的环境变量格式

@@ -200,7 +200,7 @@ func main() {
 	if err := cfg.Set("server.port", 9090); err != nil {
 		log.Printf("更新端口失败: %v", err)
 	} else {
-		log.Printf("服务器端口已更新: %d", cfg.GetInt("server.port"))
+		log.Printf("服务器端口已更新: %d", cfg.GetAs[int]("server.port"))
 	}
 
 	// 6. 演示配置验证（尝试设置无效值）
@@ -213,15 +213,15 @@ func main() {
 	log.Printf("\n=== 配置读取方式 ===")
 
 	// 方式 1: 直接键值访问
-	appName := cfg.GetString("app.name")
-	log.Printf("方式1 (键值): %s", appName)
+	appName := cfg.GetAs[string]("app.name", "DefaultApp")
+	log.Printf("方式1 (泛型): %s", appName)
 
-	// 方式 2: 泛型 API
-	port := sysconf.GetAs[int](cfg, "server.port", 8080)
-	log.Printf("方式2 (泛型): %d", port)
+	// 方式 2: 泛型 API 带默认值
+	port := cfg.GetAs[int]("server.port", 8080)
+	log.Printf("方式2 (泛型带默认): %d", port)
 
 	// 方式 3: 切片访问
-	features := cfg.GetStringSlice("server.features")
+	features := cfg.GetAs[[]string]("server.features", []string{})
 	log.Printf("方式3 (切片): %v", features)
 
 	log.Println("\n✅ 完整集成示例运行成功！")
