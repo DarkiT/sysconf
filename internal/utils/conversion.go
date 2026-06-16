@@ -30,7 +30,7 @@ func IsZero(v reflect.Value) bool {
 		return v.Uint() == 0
 	case reflect.Float32, reflect.Float64:
 		return v.Float() == 0
-	case reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+	case reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
 		return v.IsNil()
 	case reflect.Struct:
 		// 对于结构体，检查是否所有字段都是零值
@@ -272,7 +272,7 @@ func SetDefaultValues(obj any) error {
 	}
 
 	val := reflect.ValueOf(obj)
-	if val.Kind() != reflect.Ptr {
+	if val.Kind() != reflect.Pointer {
 		return errors.New("not a pointer")
 	}
 
@@ -321,7 +321,7 @@ func SetFieldValue(field reflect.Value, value string) error {
 		return nil
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		// 特殊处理 time.Duration 类型
-		if field.Type() == reflect.TypeOf(time.Duration(0)) {
+		if field.Type() == reflect.TypeFor[time.Duration]() {
 			// 先尝试解析为 duration 字符串（例如 "1h30m"）
 			if d, err := time.ParseDuration(value); err == nil {
 				field.SetInt(int64(d))
@@ -375,7 +375,7 @@ func SetFieldValue(field reflect.Value, value string) error {
 // ValidateStruct 验证结构体字段
 func ValidateStruct(obj any) error {
 	v := reflect.ValueOf(obj)
-	if v.Kind() == reflect.Ptr {
+	if v.Kind() == reflect.Pointer {
 		v = v.Elem()
 	}
 
@@ -406,7 +406,7 @@ func ValidateStruct(obj any) error {
 			if err := ValidateStruct(nestedPtr.Interface()); err != nil {
 				return fmt.Errorf("nested field %s: %w", fieldType.Name, err)
 			}
-		} else if field.Kind() == reflect.Ptr && !field.IsNil() && field.Elem().Kind() == reflect.Struct {
+		} else if field.Kind() == reflect.Pointer && !field.IsNil() && field.Elem().Kind() == reflect.Struct {
 			// 递归验证指针指向的结构体
 			if err := ValidateStruct(field.Interface()); err != nil {
 				return fmt.Errorf("pointer field %s: %w", fieldType.Name, err)

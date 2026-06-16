@@ -36,8 +36,8 @@ func TestFlattenMapToCacheInterfaceKeys(t *testing.T) {
 	cfg := newTestConfig(t)
 	testutil.Cleanup(t, cfg.Close)
 	cache := make(map[string]any)
-	m := map[interface{}]any{
-		"level1": map[interface{}]any{
+	m := map[any]any{
+		"level1": map[any]any{
 			"level2": "val",
 		},
 	}

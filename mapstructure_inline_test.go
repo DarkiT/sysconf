@@ -32,7 +32,7 @@ func TestMapstructureInlineWithMultiTagName(t *testing.T) {
 		Result:          &out,
 	})
 	assert.NoError(t, err)
-	t.Logf("embedded tag yaml=%q config=%q", reflect.TypeOf(cfg{}).Field(0).Tag.Get("yaml"), reflect.TypeOf(cfg{}).Field(0).Tag.Get("config"))
+	t.Logf("embedded tag yaml=%q config=%q", reflect.TypeFor[cfg]().Field(0).Tag.Get("yaml"), reflect.TypeFor[cfg]().Field(0).Tag.Get("config"))
 	assert.NoError(t, dec.Decode(input))
 
 	assert.Equal(t, 10, out.A)

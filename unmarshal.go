@@ -169,7 +169,7 @@ func validateUnmarshalTarget(obj any) (bool, error) {
 	}
 
 	targetType := reflect.TypeOf(obj)
-	if targetType.Kind() != reflect.Ptr {
+	if targetType.Kind() != reflect.Pointer {
 		return false, fmt.Errorf("unmarshal target must be a pointer")
 	}
 

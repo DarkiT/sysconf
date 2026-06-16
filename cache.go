@@ -1,6 +1,7 @@
 package sysconf
 
 import (
+	"maps"
 	"sync/atomic"
 	"time"
 )
@@ -40,6 +41,9 @@ func (c *Config) updateReadCache() {
 	if c == nil {
 		return
 	}
+	if c.closed.Load() {
+		return
+	}
 	if !c.cacheEnabled.Load() {
 		return
 	}
@@ -62,9 +66,7 @@ func (c *Config) updateReadCache() {
 	}
 
 	// 合并原始缓存和扁平化缓存
-	for k, v := range flatCache {
-		newCache[k] = v
-	}
+	maps.Copy(newCache, flatCache)
 
 	// 原子更新缓存
 	c.readCache.Store(newCache)
@@ -84,7 +86,7 @@ func (c *Config) flattenMapToCache(prefix string, value any, cache map[string]an
 			// 递归处理嵌套结构
 			c.flattenMapToCache(fullKey, val, cache)
 		}
-	case map[interface{}]any:
+	case map[any]any:
 		for key, val := range v {
 			if keyStr, ok := key.(string); ok {
 				fullKey := prefix + "." + keyStr
@@ -152,27 +154,37 @@ func (c *Config) invalidateCache() {
 
 // scheduleCacheUpdate 调度缓存更新，支持停止信号
 func (c *Config) scheduleCacheUpdate(delay time.Duration) {
-	c.wg.Add(1)
 	if delay <= 0 {
-		go func() {
-			defer c.wg.Done()
+		c.wg.Go(func() {
 			select {
 			case <-c.stopChan:
 				return
 			default:
 				c.updateReadCache()
 			}
-		}()
+		})
 		return
 	}
 
-	time.AfterFunc(delay, func() {
-		defer c.wg.Done()
-		select {
-		case <-c.stopChan:
-			return
-		default:
-			c.updateReadCache()
-		}
-	})
+	c.cacheMu.Lock()
+	defer c.cacheMu.Unlock()
+
+	if c.cacheTimer == nil {
+		c.cacheTimer = time.AfterFunc(delay, func() {
+			c.cacheMu.Lock()
+			c.cacheTimer = nil
+			c.cacheMu.Unlock()
+
+			select {
+			case <-c.stopChan:
+				return
+			default:
+				c.updateReadCache()
+			}
+		})
+		return
+	}
+
+	c.cacheTimer.Stop()
+	c.cacheTimer.Reset(delay)
 }

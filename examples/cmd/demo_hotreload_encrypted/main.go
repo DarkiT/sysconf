@@ -65,8 +65,10 @@ func main() {
 	}
 
 	// 演示环境变量覆盖敏感字段
-	os.Setenv("APP_DATABASE_PASSWORD", "env-secret")
-	defer os.Unsetenv("APP_DATABASE_PASSWORD")
+	if err := os.Setenv("APP_DATABASE_PASSWORD", "env-secret"); err != nil {
+		log.Fatalf("设置环境变量失败: %v", err)
+	}
+	defer func() { _ = os.Unsetenv("APP_DATABASE_PASSWORD") }()
 
 	dump(cfg, "初始配置")
 

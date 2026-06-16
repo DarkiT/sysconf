@@ -29,47 +29,47 @@ func main() {
 	fmt.Println("\n=== 设置默认配置 ===")
 
 	// 数据库配置
-	config.Set("database.host", "localhost")
-	config.Set("database.port", 3306)
-	config.Set("database.username", "root")
-	config.Set("database.password", "secret123")
-	config.Set("database.type", "mysql")
+	mustSet(config, "database.host", "localhost")
+	mustSet(config, "database.port", 3306)
+	mustSet(config, "database.username", "root")
+	mustSet(config, "database.password", "secret123")
+	mustSet(config, "database.type", "mysql")
 
 	// 服务器配置
-	config.Set("server.host", "0.0.0.0")
-	config.Set("server.port", 8080)
-	config.Set("server.mode", "development")
-	config.Set("server.ssl.enabled", false)
-	config.Set("server.ssl.cert_file", "")
-	config.Set("server.ssl.key_file", "")
+	mustSet(config, "server.host", "0.0.0.0")
+	mustSet(config, "server.port", 8080)
+	mustSet(config, "server.mode", "development")
+	mustSet(config, "server.ssl.enabled", false)
+	mustSet(config, "server.ssl.cert_file", "")
+	mustSet(config, "server.ssl.key_file", "")
 
 	// Redis配置
-	config.Set("redis.host", "127.0.0.1")
-	config.Set("redis.port", 6379)
-	config.Set("redis.db", 0)
-	config.Set("redis.password", "")
-	config.Set("redis.timeout", 30)
+	mustSet(config, "redis.host", "127.0.0.1")
+	mustSet(config, "redis.port", 6379)
+	mustSet(config, "redis.db", 0)
+	mustSet(config, "redis.password", "")
+	mustSet(config, "redis.timeout", 30)
 
 	// 日志配置
-	config.Set("log.level", "info")
-	config.Set("log.format", "json")
-	config.Set("log.output", "/var/log/app.log")
-	config.Set("log.max_size", 100)
-	config.Set("log.max_backups", 10)
+	mustSet(config, "log.level", "info")
+	mustSet(config, "log.format", "json")
+	mustSet(config, "log.output", "/var/log/app.log")
+	mustSet(config, "log.max_size", 100)
+	mustSet(config, "log.max_backups", 10)
 
 	// 邮件配置
-	config.Set("email.smtp.host", "smtp.gmail.com")
-	config.Set("email.smtp.port", 587)
-	config.Set("email.smtp.username", "test@gmail.com")
-	config.Set("email.smtp.password", "app_password")
-	config.Set("email.from", "noreply@example.com")
+	mustSet(config, "email.smtp.host", "smtp.gmail.com")
+	mustSet(config, "email.smtp.port", 587)
+	mustSet(config, "email.smtp.username", "test@gmail.com")
+	mustSet(config, "email.smtp.password", "app_password")
+	mustSet(config, "email.from", "noreply@example.com")
 
 	// API配置
-	config.Set("api.base_url", "https://api.example.com")
-	config.Set("api.timeout", 30)
-	config.Set("api.rate_limit.enabled", true)
-	config.Set("api.rate_limit.requests_per_minute", 1000)
-	config.Set("api.auth.api_key", "sk-1234567890abcdef")
+	mustSet(config, "api.base_url", "https://api.example.com")
+	mustSet(config, "api.timeout", 30)
+	mustSet(config, "api.rate_limit.enabled", true)
+	mustSet(config, "api.rate_limit.requests_per_minute", 1000)
+	mustSet(config, "api.auth.api_key", "sk-1234567890abcdef")
 
 	fmt.Println("✓ 默认配置设置完成")
 
@@ -108,7 +108,8 @@ func main() {
 
 	// 4. 创建复合验证器示例
 	fmt.Println("\n=== 创建复合验证器 ===")
-	compositeValidator := validation.NewCompositeValidator("完整应用配置验证器",
+	compositeValidator := validation.NewCompositeValidator(
+		"完整应用配置验证器",
 		validation.NewDatabaseValidator(),
 		validation.NewWebServerValidator(),
 		validation.NewRedisValidator(),
@@ -130,10 +131,10 @@ func main() {
 	fmt.Println("✓ 添加自定义业务验证器")
 
 	// 设置业务配置
-	config.Set("business.company_name", "创新科技有限公司")
-	config.Set("business.tax_id", "123456789012345678")
-	config.Set("business.industry", "technology")
-	config.Set("business.employee_count", 150)
+	mustSet(config, "business.company_name", "创新科技有限公司")
+	mustSet(config, "business.tax_id", "123456789012345678")
+	mustSet(config, "business.industry", "technology")
+	mustSet(config, "business.employee_count", 150)
 
 	// 6. 验证配置状态
 	fmt.Println("\n=== 验证配置状态 ===")
@@ -154,7 +155,7 @@ func main() {
 	}
 
 	// 恢复有效值
-	config.Set("database.port", 3306)
+	mustSet(config, "database.port", 3306)
 	fmt.Println("✓ 恢复数据库端口为有效值: 3306")
 
 	// 8. 演示字符串规则验证
@@ -170,10 +171,10 @@ func main() {
 	config.AddValidator(stringRuleValidator)
 
 	// 设置网络和安全配置
-	config.Set("network.ip_address", "192.168.1.100")
-	config.Set("network.domain", "example.com")
-	config.Set("security.admin_email", "admin@example.com")
-	config.Set("security.api_token", "123e4567-e89b-12d3-a456-426614174000")
+	mustSet(config, "network.ip_address", "192.168.1.100")
+	mustSet(config, "network.domain", "example.com")
+	mustSet(config, "security.admin_email", "admin@example.com")
+	mustSet(config, "security.api_token", "123e4567-e89b-12d3-a456-426614174000")
 
 	fmt.Println("✅ 字符串规则验证通过!")
 
@@ -214,4 +215,10 @@ func main() {
 	fmt.Println("   • 动态验证器管理")
 	fmt.Println("   • 自动验证机制")
 	fmt.Println("   • 完全替代旧系统")
+}
+
+func mustSet(config *sysconf.Config, key string, value any) {
+	if err := config.Set(key, value); err != nil {
+		log.Fatalf("设置配置 %s 失败: %v", key, err)
+	}
 }

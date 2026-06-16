@@ -14,6 +14,21 @@ func WithPath(path string) Option {
 		// 获取文件名部分
 		fileName := filepath.Base(path)
 
+		// 处理特殊情况：隐藏文件没有明确扩展名（如 .env、.config）。
+		// filepath.Ext(".env") 会返回 ".env"，必须先于通用扩展名逻辑判断。
+		if isHiddenFileWithoutExtension(fileName) {
+			c.path = filepath.Dir(path)
+			c.name = fileName
+			c.configFileName = fileName
+			switch fileName {
+			case ".env":
+				c.mode = "env"
+			case ".dotenv":
+				c.mode = "dotenv"
+			}
+			return
+		}
+
 		// 处理两种情况：
 		// 1. 文件有明确的扩展名（如config.yaml）
 		// 2. 文件是隐藏文件但有扩展名（如.config.yaml）
@@ -22,21 +37,21 @@ func WithPath(path string) Option {
 			c.mode = strings.TrimPrefix(ext, ".")
 			c.path = filepath.Dir(path)
 			c.name = strings.TrimSuffix(fileName, ext)
-			return
-		}
-
-		// 处理特殊情况：隐藏文件没有明确扩展名（如.config）
-		if strings.HasPrefix(fileName, ".") && !strings.Contains(fileName[1:], ".") {
-			// 这是一个没有扩展名的隐藏文件
-			c.path = filepath.Dir(path)
-			c.name = fileName // 保留完整的隐藏文件名作为配置名称
-			// 注意：这种情况下需要通过WithMode显式设置配置模式
+			c.configFileName = ""
 			return
 		}
 
 		// 如果是一个目录路径，直接使用
 		c.path = path
+		c.configFileName = ""
 	}
+}
+
+func isHiddenFileWithoutExtension(fileName string) bool {
+	return fileName != "." &&
+		fileName != ".." &&
+		strings.HasPrefix(fileName, ".") &&
+		!strings.Contains(fileName[1:], ".")
 }
 
 // WithMode 设置配置文件模式

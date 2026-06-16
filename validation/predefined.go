@@ -5,12 +5,14 @@ func NewDatabaseValidator() *StructuredValidator {
 	validator := NewRuleValidator("Database Configuration Validator")
 
 	// 基础连接配置验证
-	validator.AddStringRules("database.host",
+	validator.AddStringRules(
+		"database.host",
 		"required",
 		"hostname",
 	)
 
-	validator.AddStringRules("database.port",
+	validator.AddStringRules(
+		"database.port",
 		"required",
 		"port",
 	)
@@ -19,7 +21,8 @@ func NewDatabaseValidator() *StructuredValidator {
 	validator.AddRule("database.password", Required("Database password cannot be empty"))
 
 	// 数据库类型验证
-	validator.AddStringRules("database.type",
+	validator.AddStringRules(
+		"database.type",
 		"required",
 		"enum:mysql,postgresql,sqlite,mongodb",
 	)
@@ -28,12 +31,14 @@ func NewDatabaseValidator() *StructuredValidator {
 	validator.AddRule("database.database", Required("Database name cannot be empty"))
 
 	// 连接数验证
-	validator.AddStringRules("database.max_conns",
+	validator.AddStringRules(
+		"database.max_conns",
 		"range:1,100",
 	)
 
 	// 超时验证
-	validator.AddStringRules("database.timeout",
+	validator.AddStringRules(
+		"database.timeout",
 		"required",
 	)
 
@@ -45,29 +50,34 @@ func NewWebServerValidator() *StructuredValidator {
 	validator := NewRuleValidator("Web Server Configuration Validator")
 
 	// 主机配置
-	validator.AddStringRules("server.host",
+	validator.AddStringRules(
+		"server.host",
 		"required",
 		"hostname",
 	)
 
 	// 端口配置
-	validator.AddStringRules("server.port",
+	validator.AddStringRules(
+		"server.port",
 		"required",
 		"port",
 	)
 
 	// 运行模式
-	validator.AddStringRules("server.mode",
+	validator.AddStringRules(
+		"server.mode",
 		"enum:development,production,testing",
 	)
 
 	// 超时配置
-	validator.AddStringRules("server.timeout",
+	validator.AddStringRules(
+		"server.timeout",
 		"required",
 	)
 
 	// SSL配置验证
-	validator.AddStringRules("server.ssl.enabled",
+	validator.AddStringRules(
+		"server.ssl.enabled",
 		"boolean",
 	)
 
@@ -83,24 +93,28 @@ func NewRedisValidator() *StructuredValidator {
 	validator := NewRuleValidator("Redis Configuration Validator")
 
 	// 主机配置
-	validator.AddStringRules("redis.host",
+	validator.AddStringRules(
+		"redis.host",
 		"required",
 		"hostname",
 	)
 
 	// 端口配置
-	validator.AddStringRules("redis.port",
+	validator.AddStringRules(
+		"redis.port",
 		"required",
 		"port",
 	)
 
 	// 数据库索引验证
-	validator.AddStringRules("redis.db",
+	validator.AddStringRules(
+		"redis.db",
 		"range:0,15",
 	)
 
 	// 密码验证（可选）
-	validator.AddStringRules("redis.password",
+	validator.AddStringRules(
+		"redis.password",
 		"string",
 	)
 
@@ -108,7 +122,8 @@ func NewRedisValidator() *StructuredValidator {
 	validator.AddRule("redis.addresses", Required("Redis address list cannot be empty"))
 
 	// 超时验证
-	validator.AddStringRules("redis.timeout",
+	validator.AddStringRules(
+		"redis.timeout",
 		"required",
 	)
 
@@ -120,13 +135,15 @@ func NewLogValidator() *StructuredValidator {
 	validator := NewRuleValidator("Log Configuration Validator")
 
 	// 日志级别验证
-	validator.AddStringRules("logging.level",
+	validator.AddStringRules(
+		"logging.level",
 		"required",
 		"enum:debug,info,warn,error,fatal",
 	)
 
 	// 日志格式验证
-	validator.AddStringRules("logging.format",
+	validator.AddStringRules(
+		"logging.format",
 		"enum:json,text",
 	)
 
@@ -141,19 +158,22 @@ func NewEmailValidator() *StructuredValidator {
 	validator := NewRuleValidator("Email Configuration Validator")
 
 	// SMTP主机验证
-	validator.AddStringRules("email.smtp.host",
+	validator.AddStringRules(
+		"email.smtp.host",
 		"required",
 		"hostname",
 	)
 
 	// SMTP端口验证
-	validator.AddStringRules("email.smtp.port",
+	validator.AddStringRules(
+		"email.smtp.port",
 		"required",
 		"port",
 	)
 
 	// SMTP用户名验证
-	validator.AddStringRules("email.smtp.username",
+	validator.AddStringRules(
+		"email.smtp.username",
 		"required",
 		"email",
 	)
@@ -162,7 +182,8 @@ func NewEmailValidator() *StructuredValidator {
 	validator.AddRule("email.smtp.password", Required("SMTP password cannot be empty"))
 
 	// 发件人邮箱验证
-	validator.AddStringRules("email.from",
+	validator.AddStringRules(
+		"email.from",
 		"required",
 		"email",
 	)
@@ -175,37 +196,44 @@ func NewAPIValidator() *StructuredValidator {
 	validator := NewRuleValidator("API Configuration Validator")
 
 	// API基础URL验证
-	validator.AddStringRules("api.base_url",
+	validator.AddStringRules(
+		"api.base_url",
 		"required",
 		"url",
 	)
 
 	// API超时验证
-	validator.AddStringRules("api.timeout",
+	validator.AddStringRules(
+		"api.timeout",
 		"required",
 		"range:1,300",
 	)
 
 	// 限流配置验证
-	validator.AddStringRules("api.rate_limit.enabled",
+	validator.AddStringRules(
+		"api.rate_limit.enabled",
 		"boolean",
 	)
 
-	validator.AddStringRules("api.rate_limit.requests_per_minute",
+	validator.AddStringRules(
+		"api.rate_limit.requests_per_minute",
 		"range:1,10000",
 	)
 
 	// API密钥验证
-	validator.AddStringRules("api.auth.api_key",
+	validator.AddStringRules(
+		"api.auth.api_key",
 		"required",
 	)
 
 	// JWT配置验证
-	validator.AddStringRules("api.auth.jwt.secret",
+	validator.AddStringRules(
+		"api.auth.jwt.secret",
 		"required",
 	)
 
-	validator.AddStringRules("api.auth.jwt.expires_in",
+	validator.AddStringRules(
+		"api.auth.jwt.expires_in",
 		"required",
 	)
 

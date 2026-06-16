@@ -3,11 +3,14 @@ package sysconf
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +19,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 
 	"github.com/darkit/sysconf/internal/path"
 )
@@ -83,14 +87,17 @@ type Config struct {
 	closed   atomic.Bool    // 防止重复关闭
 
 	// 基本配置
-	logger  Logger // 日志记录器
-	path    string // 配置文件路径
-	mode    string // 配置文件类型
-	name    string // 配置文件名称
-	content string // 默认配置文件内容
+	logger Logger // 日志记录器
+	path   string // 配置文件路径
+	mode   string // 配置文件类型
+	name   string // 配置文件名称
+	// configFileName 保存需要按精确文件名读取的隐藏配置文件，例如 .env。
+	configFileName string
+	content        string // 默认配置文件内容
 
 	// 功能组件
 	envOptions    EnvOptions        // 环境变量配置选项
+	envEnabled    atomic.Bool       // 环境变量热路径开关
 	envKeyCache   sync.Map          // 环境变量键派生缓存
 	cryptoOptions CryptoOptions     // 加密配置选项
 	crypto        ConfigCrypto      // 加密实现实例
@@ -109,7 +116,8 @@ type Config struct {
 	nextWatchHandle uint64
 
 	// viper兼容层（用于文件操作和环境变量）
-	viper *viper.Viper
+	viper       *viper.Viper
+	viperLoaded bool
 
 	// 高性能缓存 - 简化版本，无复杂版本控制
 	cacheEnabled atomic.Bool // 是否启用缓存（原子操作保证并发安全）
@@ -122,6 +130,7 @@ type Config struct {
 	cacheVersion int64        // 缓存版本号，用于检测是否需要更新
 	cacheMu      sync.Mutex   // 缓存更新互斥锁
 	cacheBuildMu sync.Mutex   // 缓存构建互斥锁，防止并发 updateReadCache 访问 viper map
+	cacheTimer   *time.Timer  // 缓存重建防抖定时器
 	writeMu      sync.Mutex   // 写入操作的互斥锁（来自setter.go）
 }
 
@@ -144,6 +153,7 @@ func New(opts ...Option) (*Config, error) {
 	// 创建统一配置实例
 	c := &Config{
 		viper:             viper.New(),
+		viperLoaded:       true,
 		path:              workPathValue,
 		mode:              "yaml",
 		logger:            &NopLogger{}, // 默认空日志记录器
@@ -236,21 +246,23 @@ func (c *Config) WatchWithContext(ctx context.Context, callbacks ...func()) cont
 	}
 	handles := c.registerWatchCallbacksLocked(callbacks...)
 	if err := c.startWatchLocked(); err != nil {
+		for _, handle := range handles {
+			delete(c.watchCallbacks, handle)
+		}
 		c.mu.Unlock()
+		cancel()
 		c.logger.Errorf("Failed to start config watch: %v", err)
 		return func() {}
 	}
 	c.mu.Unlock()
 
-	c.wg.Add(1)
-	go func() {
-		defer c.wg.Done()
+	c.wg.Go(func() {
 		select {
 		case <-watchCtx.Done():
 		case <-c.stopChan:
 		}
 		c.unregisterWatchCallbacks(handles...)
-	}()
+	})
 
 	return cancel
 }
@@ -273,8 +285,9 @@ func (c *Config) reloadConfigLocked() error {
 
 // Viper 返回底层的 viper 实例
 func (c *Config) Viper() *viper.Viper {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ensureViperLoadedLocked()
 	return c.viper
 }
 
@@ -333,7 +346,7 @@ func (c *Config) createDefaultConfigInternal(locked bool) error {
 	}
 
 	// 有name时，创建物理文件（原有逻辑）
-	configFile := filepath.Join(c.path, c.name+"."+c.mode)
+	configFile := c.configFilePath()
 
 	if err := os.MkdirAll(filepath.Dir(configFile), 0o755); err != nil {
 		c.logger.Errorf("Failed to create config directory: %v", err)
@@ -439,6 +452,10 @@ func (c *Config) loadContentToMemory() error {
 func (c *Config) loadContentToMemoryUnsafe() error {
 	c.logger.Debugf("Loading config content to memory")
 
+	if c.canLoadContentDirectly() {
+		return c.loadContentDirectUnsafe()
+	}
+
 	reader := strings.NewReader(c.content)
 
 	if c.mode != "" {
@@ -525,6 +542,7 @@ func (c *Config) initialize() error {
 	}
 
 	c.viper = viper.New()
+	c.viperLoaded = true
 
 	if err := c.initializeEnv(); err != nil {
 		return c.wrapError(err, "初始化环境变量")
@@ -557,7 +575,9 @@ func (c *Config) initialize() error {
 		if err := c.validatePath(); err != nil {
 			return c.wrapError(err, "验证配置文件路径")
 		}
-		c.viper.AddConfigPath(c.path)
+		if c.configFileName == "" {
+			c.viper.AddConfigPath(c.path)
+		}
 	}
 
 	if err := c.validateMode(); err != nil {
@@ -568,7 +588,9 @@ func (c *Config) initialize() error {
 		c.viper.SetConfigType(c.mode)
 	}
 
-	if c.name != "" {
+	if c.configFileName != "" {
+		c.viper.SetConfigFile(c.configFilePath())
+	} else if c.name != "" {
 		c.viper.SetConfigName(c.name)
 	}
 
@@ -581,8 +603,10 @@ func (c *Config) initialize() error {
 		return err // loadOrCreateConfig 已经使用了 wrapError
 	}
 
-	// 同步viper数据到原子存储（已在锁内，直接调用内部方法）
-	c.syncFromViperUnsafe()
+	if c.viperLoaded {
+		// 同步viper数据到原子存储（已在锁内，直接调用内部方法）
+		c.syncFromViperUnsafe()
+	}
 
 	// 启用读取缓存以优化并发访问性能（保持兼容性）
 	c.enableReadCache()
@@ -613,6 +637,13 @@ func (c *Config) Close() error {
 	}
 	c.pendingWrites = false
 	c.mu.Unlock()
+
+	c.cacheMu.Lock()
+	if c.cacheTimer != nil {
+		c.cacheTimer.Stop()
+		c.cacheTimer = nil
+	}
+	c.cacheMu.Unlock()
 
 	// 关闭停止通道，通知所有监听者退出
 	if c.stopChan != nil {
@@ -728,8 +759,10 @@ func (c *Config) handleConfigChange(e fsnotify.Event) {
 
 func (c *Config) initializeEnv() error {
 	if !c.envOptions.Enabled {
+		c.envEnabled.Store(false)
 		return nil
 	}
+	c.envEnabled.Store(true)
 
 	// 设置环境变量前缀（自动转大写）
 	if c.envOptions.Prefix != "" {
@@ -803,9 +836,9 @@ func (c *Config) bindSmartCaseEnvVars() {
 
 			// 如果设置了前缀，只处理匹配前缀的环境变量
 			if prefix != "" {
-				if strings.HasPrefix(strings.ToUpper(key), prefix) {
+				if after, ok := strings.CutPrefix(strings.ToUpper(key), prefix); ok {
 					// 移除前缀并转换为配置键格式
-					configKey := strings.TrimPrefix(strings.ToUpper(key), prefix)
+					configKey := after
 					configKey = strings.ToLower(strings.ReplaceAll(configKey, "_", "."))
 					matchingVars = append(matchingVars, struct{ key, configKey string }{key, configKey})
 				}
@@ -840,14 +873,6 @@ func (c *Config) bindSmartCaseEnvVars() {
 	if duration > maxProcessingTime && prefix == "" {
 		c.logger.Warnf("Environment variable processing took %v, consider using SetEnvPrefix() for better performance", duration)
 	}
-}
-
-// min 返回两个整数中的较小值
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // 初始化加密配置
@@ -888,10 +913,7 @@ func redactKeyForLog(key string) string {
 		return "[empty]"
 	}
 
-	headLen := 4
-	if len(key) < headLen {
-		headLen = len(key)
-	}
+	headLen := min(len(key), 4)
 
 	digest := sha256.Sum256([]byte(key))
 	return fmt.Sprintf("%s*** (len=%d, sha256=%x)", key[:headLen], len(key), digest[:4])
@@ -955,10 +977,8 @@ func (c *Config) validateMode() error {
 	}
 
 	// 检查是否是支持的文件类型
-	for _, ext := range viper.SupportedExts {
-		if ext == c.mode {
-			return nil
-		}
+	if slices.Contains(viper.SupportedExts, c.mode) {
+		return nil
 	}
 
 	c.logger.Errorf("Unsupported config mode: %s (supported modes: %s)",
@@ -1003,6 +1023,16 @@ func (c *Config) validatePath() error {
 	}
 
 	return nil
+}
+
+func (c *Config) configFilePath() string {
+	if c.configFileName != "" {
+		return filepath.Join(c.path, c.configFileName)
+	}
+	if c.name == "" {
+		return ""
+	}
+	return filepath.Join(c.path, c.name+"."+c.mode)
 }
 
 // ensureDirectoryAccess 确保目录存在且可写
@@ -1055,6 +1085,8 @@ func (c *Config) reinitialize() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.ensureViperLoadedLocked()
+
 	// 重新绑定环境变量
 	if err := c.initializeEnv(); err != nil {
 		return fmt.Errorf("reinitialize env: %w", err)
@@ -1064,24 +1096,6 @@ func (c *Config) reinitialize() error {
 	c.syncFromViperUnsafe()
 
 	return nil
-}
-
-// createSnapshot 创建当前配置与缓存的深拷贝快照
-func (c *Config) createSnapshot() *snapshot {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	currentData := c.loadData()
-	readCache := c.loadReadCache()
-
-	dataClone := deepCloneMap(currentData)
-	cacheClone := deepCloneMap(readCache)
-
-	return &snapshot{
-		data:      dataClone,
-		readCache: cacheClone,
-		timestamp: time.Now(),
-	}
 }
 
 // restoreSnapshot 恢复快照，回滚内存与缓存状态
@@ -1128,10 +1142,9 @@ func (c *Config) loadData() map[string]any {
 
 // storeData 原子性存储配置数据（创建副本以确保线程安全）
 func (c *Config) storeData(newData map[string]any) {
-	// 创建深拷贝以确保数据完整性
-	dataCopy := make(map[string]any)
-	for k, v := range newData {
-		dataCopy[k] = v
+	dataCopy := maps.Clone(newData)
+	if dataCopy == nil {
+		dataCopy = make(map[string]any)
 	}
 	c.data.Store(dataCopy)
 }
@@ -1140,7 +1153,7 @@ func (c *Config) storeData(newData map[string]any) {
 func (c *Config) syncFromViperUnsafe() {
 	// 从viper获取所有数据并进行扁平化处理
 	viperData := c.viper.AllSettings()
-	flatData := make(map[string]any)
+	flatData := make(map[string]any, len(viperData)*12)
 
 	// 将嵌套数据扁平化，例如 app.name, database.host 等
 	c.flattenViperData("", viperData, flatData)
@@ -1161,13 +1174,17 @@ func (c *Config) flattenViperData(prefix string, data map[string]any, result map
 		if nestedMap, ok := value.(map[string]any); ok {
 			c.flattenViperData(fullKey, nestedMap, result)
 		} else {
-			result[fullKey] = value
+			result[fullKey] = sanitizeValue(value)
 		}
 	}
 }
 
 // getRaw 无锁读取原始配置值
 func (c *Config) getRaw(key string) (any, bool) {
+	if value, exists := c.lookupEnvValue(key); exists {
+		return value, true
+	}
+
 	data := c.loadData()
 
 	// 首先尝试直接匹配
@@ -1189,34 +1206,102 @@ func (c *Config) getRaw(key string) (any, bool) {
 	return c.fetchFromViperOrEnv(key)
 }
 
+func (c *Config) lookupEnvValue(key string) (any, bool) {
+	if !c.envEnabled.Load() {
+		return nil, false
+	}
+
+	c.mu.RLock()
+	envOptions := c.envOptions
+	c.mu.RUnlock()
+
+	if !envOptions.Enabled {
+		return nil, false
+	}
+
+	envKeys := c.deriveEnvKeys(envOptions, key)
+	for _, envKey := range envKeys {
+		if val, ok := os.LookupEnv(envKey); ok {
+			return val, true
+		}
+	}
+	return nil, false
+}
+
 // fetchFromViperOrEnv 从 viper 或环境变量中查找配置值
 func (c *Config) fetchFromViperOrEnv(key string) (any, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	if c.viper != nil {
+	if c.viper != nil && c.viperLoaded {
 		if c.viper.IsSet(key) || c.viper.InConfig(key) {
 			return c.viper.Get(key), true
 		}
 	}
 
-	envOptions := c.envOptions
-	if envOptions.Enabled {
-		envKeys := c.deriveEnvKeys(envOptions, key)
-		for _, envKey := range envKeys {
-			if val, ok := os.LookupEnv(envKey); ok {
-				return val, true
-			}
-		}
-	}
-
-	if c.viper != nil {
+	if c.viper != nil && c.viperLoaded {
 		if val := c.viper.Get(key); hasConcreteValue(val) {
 			return val, true
 		}
 	}
 
 	return nil, false
+}
+
+func (c *Config) canLoadContentDirectly() bool {
+	if c.name != "" || c.content == "" || c.envOptions.Enabled || len(c.pflags) > 0 {
+		return false
+	}
+	if c.cryptoOptions.Enabled {
+		return false
+	}
+	return c.mode == "yaml" || c.mode == "yml" || c.mode == "json"
+}
+
+func (c *Config) loadContentDirectUnsafe() error {
+	nested, err := parseContentMap([]byte(c.content), c.mode)
+	if err != nil {
+		c.logger.Errorf("Failed to parse config content directly: %v", err)
+		return fmt.Errorf("read config from memory: %w", err)
+	}
+
+	flatData := make(map[string]any, len(nested)*12)
+	c.flattenViperData("", nested, flatData)
+	c.storeData(flatData)
+	c.viperLoaded = false
+	c.logger.Infof("Configuration loaded successfully in direct memory-only mode")
+	return nil
+}
+
+func parseContentMap(data []byte, mode string) (map[string]any, error) {
+	result := make(map[string]any)
+	switch mode {
+	case "yaml", "yml":
+		if err := yaml.Unmarshal(data, &result); err != nil {
+			return nil, err
+		}
+	case "json":
+		if err := json.Unmarshal(data, &result); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("unsupported direct content mode: %s", mode)
+	}
+	return result, nil
+}
+
+func (c *Config) ensureViperLoadedLocked() {
+	if c.viperLoaded || c.viper == nil {
+		return
+	}
+
+	if c.mode != "" {
+		c.viper.SetConfigType(c.mode)
+	}
+	for key, value := range c.loadData() {
+		c.viper.Set(key, deepCloneValue(value))
+	}
+	c.viperLoaded = true
 }
 
 // deriveEnvKeys 生成可能的环境变量键名
@@ -1346,9 +1431,9 @@ func (c *Config) reconstructNestedValue(data map[string]any, key string) (any, b
 	found := false
 
 	for k, v := range data {
-		if strings.HasPrefix(k, prefix) {
+		if after, ok := strings.CutPrefix(k, prefix); ok {
 			// 移除前缀，获取相对路径
-			subKey := strings.TrimPrefix(k, prefix)
+			subKey := after
 			// 在嵌套map中设置值
 			c.setNestedValue(nested, subKey, v)
 			found = true
@@ -1426,6 +1511,10 @@ func sanitizeValue(value any) any {
 		for k, val := range v {
 			copied[k] = sanitizeValue(val)
 		}
+		return copied
+	case map[string]string:
+		copied := make(map[string]string, len(v))
+		maps.Copy(copied, v)
 		return copied
 	case map[any]any:
 		copied := make(map[string]any, len(v))

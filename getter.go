@@ -2,6 +2,7 @@ package sysconf
 
 import (
 	"fmt"
+	"maps"
 	"strconv"
 	"strings"
 	"time"
@@ -39,7 +40,7 @@ func (c *Config) Get(key string, def ...any) any {
 	// 使用新的无锁原子读取
 	if val, exists := c.getRaw(key); exists {
 		c.logger.Debugf("Get config value: %s = %v", key, val)
-		return val
+		return deepCloneValue(val)
 	}
 
 	// 不存在则返回默认值
@@ -270,9 +271,6 @@ func (c *Config) GetStringSlice(key string) []string {
 		return []string{}
 	}
 
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
 	// 使用新的原子存储系统
 	val, exists := c.getRaw(key)
 	if !exists {
@@ -286,7 +284,7 @@ func (c *Config) GetStringSlice(key string) []string {
 	if result == nil {
 		return []string{}
 	}
-	return result
+	return append([]string(nil), result...)
 }
 
 // GetBoolSlice 获取布尔值切片配置
@@ -312,8 +310,8 @@ func (c *Config) GetBoolSlice(key string) []bool {
 
 	switch v := val.(type) {
 	case []bool:
-		return v
-	case []interface{}:
+		return append([]bool(nil), v...)
+	case []any:
 		result := make([]bool, 0, len(v))
 		for _, item := range v {
 			if b, ok := item.(bool); ok {
@@ -363,7 +361,7 @@ func (c *Config) GetIntSlice(key string) []int {
 	if result == nil {
 		return []int{}
 	}
-	return result
+	return append([]int(nil), result...)
 }
 
 // GetFloatSlice 获取浮点数切片配置
@@ -394,9 +392,9 @@ func (c *Config) GetFloatSlice(key string) []float64 {
 	case []float64:
 		// 已经是float64切片，直接返回
 		c.logger.Debugf("GetFloatSlice[%s] - 直接返回[]float64: %v", key, v)
-		return v
+		return append([]float64(nil), v...)
 
-	case []interface{}:
+	case []any:
 		// interface{}切片，逐个转换
 		result := make([]float64, 0, len(v))
 		for i, item := range v {
@@ -474,7 +472,7 @@ func (c *Config) GetStringMap(key string) map[string]any {
 	if exists {
 		// 如果直接存在，尝试转换
 		if result, err := cast.ToStringMapE(val); err == nil && result != nil {
-			return result
+			return deepCloneMap(result)
 		}
 	}
 
@@ -482,7 +480,7 @@ func (c *Config) GetStringMap(key string) map[string]any {
 	data := c.loadData()
 	if reconstructed, found := c.reconstructNestedValue(data, key); found {
 		if result, err := cast.ToStringMapE(reconstructed); err == nil && result != nil {
-			return result
+			return deepCloneMap(result)
 		}
 	}
 
@@ -506,7 +504,7 @@ func (c *Config) GetStringMapString(key string) map[string]string {
 	if exists {
 		// 如果直接存在，尝试转换
 		if result, err := cast.ToStringMapStringE(val); err == nil && result != nil {
-			return result
+			return cloneStringMapString(result)
 		}
 	}
 
@@ -514,11 +512,20 @@ func (c *Config) GetStringMapString(key string) map[string]string {
 	data := c.loadData()
 	if reconstructed, found := c.reconstructNestedValue(data, key); found {
 		if result, err := cast.ToStringMapStringE(reconstructed); err == nil && result != nil {
-			return result
+			return cloneStringMapString(result)
 		}
 	}
 
 	return make(map[string]string)
+}
+
+func cloneStringMapString(src map[string]string) map[string]string {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	maps.Copy(dst, src)
+	return dst
 }
 
 // GetTime 获取时间配置

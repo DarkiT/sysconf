@@ -257,7 +257,8 @@ log:
 `
 
 	// 🆕 创建复合验证器
-	composite := validation.NewCompositeValidator("Web应用验证器",
+	composite := validation.NewCompositeValidator(
+		"Web应用验证器",
 		validation.NewDatabaseValidator(),
 		validation.NewWebServerValidator(),
 		validation.NewLogValidator(),

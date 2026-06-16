@@ -70,6 +70,9 @@ func Validate(value interface{}, rule ValidationRule) error {
 
 // isZero 检查值是否为零值
 func isZero(v reflect.Value) bool {
+	if !v.IsValid() {
+		return true
+	}
 	switch v.Kind() {
 	case reflect.Array, reflect.String:
 		return v.Len() == 0
@@ -81,7 +84,7 @@ func isZero(v reflect.Value) bool {
 		return v.Uint() == 0
 	case reflect.Float32, reflect.Float64:
 		return v.Float() == 0
-	case reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+	case reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
 		return v.IsNil()
 	}
 	return false
@@ -323,7 +326,7 @@ func Enum(values string, message string) ValidationRule {
 // ValidateStruct 验证结构体
 func ValidateStruct(v interface{}, rules map[string][]ValidationRule) error {
 	val := reflect.ValueOf(v)
-	if val.Kind() == reflect.Ptr {
+	if val.Kind() == reflect.Pointer {
 		val = val.Elem()
 	}
 

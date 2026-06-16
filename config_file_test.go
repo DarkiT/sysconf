@@ -17,7 +17,7 @@ func TestMarshalConfigUnsupportedMode(t *testing.T) {
 
 func TestWriteConfigFile_NoEncrypt(t *testing.T) {
 	cfg := newTestConfig(t)
-	defer cfg.Close()
+	defer func() { _ = cfg.Close() }()
 
 	// 覆盖内存模式保护与写文件成功路径
 	cfg.name = "" // 空 name -> 内存模式直接返回

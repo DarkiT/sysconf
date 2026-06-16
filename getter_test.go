@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGetters(t *testing.T) {
@@ -28,7 +29,7 @@ func TestGetters(t *testing.T) {
 	if err := c.Set("direct_slice", []string{"A", "B", "C"}); err != nil {
 		t.Fatalf("Set failed: %v", err)
 	}
-	if err := c.Set("direct_map", map[string]interface{}{"a": "A值", "b": "B值"}); err != nil {
+	if err := c.Set("direct_map", map[string]any{"a": "A值", "b": "B值"}); err != nil {
 		t.Fatalf("Set failed: %v", err)
 	}
 
@@ -86,8 +87,8 @@ func TestGetters(t *testing.T) {
 	})
 
 	t.Run("PathGetter", func(t *testing.T) {
-		if err := c.Set("nested_map", map[string]interface{}{
-			"child": map[string]interface{}{
+		if err := c.Set("nested_map", map[string]any{
+			"child": map[string]any{
 				"grandchild": "嵌套值",
 			},
 		}); err != nil {
@@ -118,8 +119,8 @@ func TestGetters(t *testing.T) {
 		assert.Equal(t, "B值", m["b"])
 
 		// 设置嵌套结构
-		if err := c.Set("nested_map", map[string]interface{}{
-			"child": map[string]interface{}{
+		if err := c.Set("nested_map", map[string]any{
+			"child": map[string]any{
 				"grandchild": "嵌套值",
 			},
 		}); err != nil {
@@ -155,7 +156,7 @@ func TestGetters(t *testing.T) {
 	// 测试: GetDuration 方法
 	t.Run("GetDuration", func(t *testing.T) {
 		// 设置一个持续时间
-		c.Set("direct_duration", "1h30m")
+		require.NoError(t, c.Set("direct_duration", "1h30m"))
 
 		// 基本获取
 		expected := 90 * time.Minute
@@ -167,29 +168,29 @@ func TestGetters(t *testing.T) {
 
 	t.Run("GetBoolSlice_IntSlice_FloatSlice_and_GetWithError", func(t *testing.T) {
 		cfg := newTestConfig(t)
-		defer cfg.Close()
+		defer func() { _ = cfg.Close() }()
 
 		// Bool slice covers []interface{} and []string 分支
-		cfg.Set("bools_iface", []interface{}{true, "false", "1", "bad"})
-		cfg.Set("bools_str", []string{"true", "0", "False"})
+		require.NoError(t, cfg.Set("bools_iface", []any{true, "false", "1", "bad"}))
+		require.NoError(t, cfg.Set("bools_str", []string{"true", "0", "False"}))
 		assert.ElementsMatch(t, []bool{true, false, true}, cfg.GetBoolSlice("bools_iface"))
 		assert.ElementsMatch(t, []bool{true, false, false}, cfg.GetBoolSlice("bools_str"))
 		assert.Empty(t, cfg.GetBoolSlice(""))           // 空键
 		assert.Empty(t, cfg.GetBoolSlice("not.exists")) // 不存在
 
 		// Int slice 走 cast.ToIntSliceE 成功与失败分支
-		cfg.Set("ints_ok", []interface{}{1, "2", 3.0})
+		require.NoError(t, cfg.Set("ints_ok", []any{1, "2", 3.0}))
 		assert.ElementsMatch(t, []int{1, 2, 3}, cfg.GetIntSlice("ints_ok"))
-		cfg.Set("ints_bad", []interface{}{"bad"})
+		require.NoError(t, cfg.Set("ints_bad", []any{"bad"}))
 		assert.Empty(t, cfg.GetIntSlice("ints_bad"))
 		assert.Empty(t, cfg.GetIntSlice("missing"))
 
 		// Float slice 覆盖多类型切片与单值转换分支
-		cfg.Set("floats_iface", []interface{}{1, "2.5", float32(3.5), "bad"})
-		cfg.Set("floats_int", []int{4, 5})
-		cfg.Set("floats_single", "6.5")
-		cfg.Set("floats_str", []string{"7.5", "oops"})
-		cfg.Set("floats_unconvertible", map[string]any{"x": 1})
+		require.NoError(t, cfg.Set("floats_iface", []any{1, "2.5", float32(3.5), "bad"}))
+		require.NoError(t, cfg.Set("floats_int", []int{4, 5}))
+		require.NoError(t, cfg.Set("floats_single", "6.5"))
+		require.NoError(t, cfg.Set("floats_str", []string{"7.5", "oops"}))
+		require.NoError(t, cfg.Set("floats_unconvertible", map[string]any{"x": 1}))
 		assert.InEpsilonSlice(t, []float64{1, 2.5, 3.5}, cfg.GetFloatSlice("floats_iface"), 0.0001)
 		assert.ElementsMatch(t, []float64{4, 5}, cfg.GetFloatSlice("floats_int"))
 		assert.ElementsMatch(t, []float64{6.5}, cfg.GetFloatSlice("floats_single"))
@@ -198,7 +199,7 @@ func TestGetters(t *testing.T) {
 		assert.Empty(t, cfg.GetFloatSlice("missing"))
 
 		// GetWithError 覆盖存在/缺失/空键分支
-		cfg.Set("exists", "v")
+		require.NoError(t, cfg.Set("exists", "v"))
 		val, err := cfg.GetWithError("exists")
 		assert.NoError(t, err)
 		assert.Equal(t, "v", val)
@@ -207,6 +208,55 @@ func TestGetters(t *testing.T) {
 		_, err = cfg.GetWithError("")
 		assert.Error(t, err)
 	})
+}
+
+func TestGettersReturnDefensiveCopies(t *testing.T) {
+	cfg, err := New()
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	if err := cfg.Set("slice.strings", []string{"a", "b"}); err != nil {
+		t.Fatalf("Set string slice failed: %v", err)
+	}
+	stringsValue := cfg.GetStringSlice("slice.strings")
+	stringsValue[0] = "mutated"
+	if got := cfg.GetStringSlice("slice.strings"); got[0] != "a" {
+		t.Fatalf("GetStringSlice exposed internal slice, got %v", got)
+	}
+
+	if err := cfg.Set("slice.bools", []bool{true, false}); err != nil {
+		t.Fatalf("Set bool slice failed: %v", err)
+	}
+	boolsValue := cfg.GetBoolSlice("slice.bools")
+	boolsValue[0] = false
+	if got := cfg.GetBoolSlice("slice.bools"); !got[0] {
+		t.Fatalf("GetBoolSlice exposed internal slice, got %v", got)
+	}
+
+	if err := cfg.Set("slice.floats", []float64{1.5, 2.5}); err != nil {
+		t.Fatalf("Set float slice failed: %v", err)
+	}
+	floatsValue := cfg.GetFloatSlice("slice.floats")
+	floatsValue[0] = 9.9
+	if got := cfg.GetFloatSlice("slice.floats"); got[0] != 1.5 {
+		t.Fatalf("GetFloatSlice exposed internal slice, got %v", got)
+	}
+
+	if err := cfg.Set("map.value", map[string]any{"nested": map[string]any{"key": "value"}}); err != nil {
+		t.Fatalf("Set map failed: %v", err)
+	}
+	mapValue := cfg.GetStringMap("map.value")
+	mapValue["nested"].(map[string]any)["key"] = "mutated"
+	if got := cfg.GetString("map.value.nested.key"); got != "value" {
+		t.Fatalf("GetStringMap exposed internal map, got %q", got)
+	}
+
+	raw := cfg.Get("map.value").(map[string]any)
+	raw["nested"].(map[string]any)["key"] = "raw-mutated"
+	if got := cfg.GetString("map.value.nested.key"); got != "value" {
+		t.Fatalf("Get exposed internal map, got %q", got)
+	}
 }
 
 // 测试环境变量相关功能，减少配置文件依赖

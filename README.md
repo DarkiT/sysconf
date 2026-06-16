@@ -1050,6 +1050,6 @@ MIT License - 查看 [LICENSE](LICENSE) 文件了解详情。
 
 **如果这个项目对您有帮助，请给我们一个 ⭐️**
 
-[GitHub](https://github.com/darkit/sysconf) • [API文档](https://pkg.go.dev/github.com/darkit/sysconf) • [验证器文档](validation/README.md) • [加密示例](examples/cmd/encryption_demo/) • [反馈](https://github.com/darkit/sysconf/issues)
+[GitHub](https://github.com/darkit/sysconf) • [API文档](https://pkg.go.dev/github.com/darkit/sysconf) • [验证器文档](validation/README.md) • [加密示例](examples/encryption_demo/) • [反馈](https://github.com/darkit/sysconf/issues)
 
 </div>

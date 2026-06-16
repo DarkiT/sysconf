@@ -70,7 +70,7 @@ func TestConfigValidateFunc(t *testing.T) {
 func TestAddValidator(t *testing.T) {
 	tmpDir := filepath.Join(os.TempDir(), "validator_add_test")
 	require.NoError(t, os.MkdirAll(tmpDir, 0o755))
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	cfg, err := New(
 		WithPath(tmpDir),
@@ -105,7 +105,7 @@ database:
 func TestAddValidateFunc(t *testing.T) {
 	tmpDir := filepath.Join(os.TempDir(), "validator_func_test")
 	require.NoError(t, os.MkdirAll(tmpDir, 0o755))
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	cfg, err := New(
 		WithPath(tmpDir),
@@ -150,7 +150,7 @@ server:
 func TestClearValidators(t *testing.T) {
 	tmpDir := filepath.Join(os.TempDir(), "validator_clear_test")
 	require.NoError(t, os.MkdirAll(tmpDir, 0o755))
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	cfg, err := New(
 		WithPath(tmpDir),
@@ -184,7 +184,7 @@ func TestClearValidators(t *testing.T) {
 func TestGetValidators(t *testing.T) {
 	tmpDir := filepath.Join(os.TempDir(), "validator_get_test")
 	require.NoError(t, os.MkdirAll(tmpDir, 0o755))
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	cfg, err := New(
 		WithPath(tmpDir),
@@ -219,7 +219,7 @@ func TestGetValidators(t *testing.T) {
 func TestValidatorsIntegration(t *testing.T) {
 	tmpDir := filepath.Join(os.TempDir(), "validator_integration_test")
 	require.NoError(t, os.MkdirAll(tmpDir, 0o755))
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	cfg, err := New(
 		WithPath(tmpDir),
@@ -310,7 +310,7 @@ func flattenAllSettings(m map[string]any) map[string]any {
 func TestValidatorsConcurrency(t *testing.T) {
 	tmpDir := filepath.Join(os.TempDir(), "validator_concurrency_test")
 	require.NoError(t, os.MkdirAll(tmpDir, 0o755))
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	cfg, err := New(
 		WithPath(tmpDir),
@@ -321,7 +321,7 @@ func TestValidatorsConcurrency(t *testing.T) {
 
 	// 并发添加验证器
 	done := make(chan bool)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		go func(id int) {
 			cfg.AddValidateFunc(func(config map[string]any) error {
 				return fmt.Errorf("validator %d", id)
@@ -331,7 +331,7 @@ func TestValidatorsConcurrency(t *testing.T) {
 	}
 
 	// 等待所有goroutine完成
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		<-done
 	}
 
@@ -340,14 +340,14 @@ func TestValidatorsConcurrency(t *testing.T) {
 	assert.Len(t, validators, 10, "应该有10个验证器")
 
 	// 并发获取和清除验证器
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		go func() {
 			_ = cfg.GetValidators()
 			done <- true
 		}()
 	}
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		<-done
 	}
 
@@ -361,7 +361,7 @@ func TestValidatorsConcurrency(t *testing.T) {
 func TestViperMethod(t *testing.T) {
 	tmpDir := filepath.Join(os.TempDir(), "viper_method_test")
 	require.NoError(t, os.MkdirAll(tmpDir, 0o755))
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	cfg, err := New(
 		WithPath(tmpDir),
@@ -392,7 +392,7 @@ test:
 func TestCreateBackupIfExists(t *testing.T) {
 	tmpDir := filepath.Join(os.TempDir(), "backup_test")
 	require.NoError(t, os.MkdirAll(tmpDir, 0o755))
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	t.Run("文件不存在时不创建备份", func(t *testing.T) {
 		cfg, err := New(

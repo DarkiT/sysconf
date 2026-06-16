@@ -37,11 +37,11 @@ func TestConcurrentSet_NoDataLoss(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// 并发写入数据
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < iterations; j++ {
+			for j := range iterations {
 				key := fmt.Sprintf("key_%d_%d", id, j)
 				if err := cfg.Set(key, j); err != nil {
 					t.Errorf("Set 失败 %s: %v", key, err)
@@ -56,8 +56,8 @@ func TestConcurrentSet_NoDataLoss(t *testing.T) {
 	time.Sleep(4 * time.Second)
 
 	// 验证所有数据都写入成功
-	for i := 0; i < goroutines; i++ {
-		for j := 0; j < iterations; j++ {
+	for i := range goroutines {
+		for j := range iterations {
 			key := fmt.Sprintf("key_%d_%d", i, j)
 			got := cfg.GetInt(key)
 			assert.Equal(t, j, got, "数据丢失或错误: %s, 期望 %d, 获得 %d", key, j, got)
@@ -143,7 +143,7 @@ func TestConcurrentReadWrite(t *testing.T) {
 	testutil.Cleanup(t, cfg.Close)
 
 	// 初始化一些数据
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		if err := cfg.Set(fmt.Sprintf("key%d", i), i); err != nil {
 			t.Fatalf("Set failed: %v", err)
 		}
@@ -153,7 +153,7 @@ func TestConcurrentReadWrite(t *testing.T) {
 	stop := make(chan struct{})
 
 	// 启动读 goroutines
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
@@ -171,11 +171,11 @@ func TestConcurrentReadWrite(t *testing.T) {
 	}
 
 	// 启动写 goroutines
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < 50; j++ {
+			for j := range 50 {
 				select {
 				case <-stop:
 					return
@@ -227,11 +227,11 @@ func TestEncryptedWriteWithConcurrentReads(t *testing.T) {
 	errors := make(chan error, 100)
 
 	// 并发写入
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < 10; j++ {
+			for j := range 10 {
 				if err := cfg.Set("counter", id*10+j); err != nil {
 					errors <- fmt.Errorf("写入失败 goroutine %d: %w", id, err)
 				}
@@ -240,11 +240,11 @@ func TestEncryptedWriteWithConcurrentReads(t *testing.T) {
 	}
 
 	// 并发读取
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < 50; j++ {
+			for range 50 {
 				val := cfg.GetInt("counter")
 				if val < 0 {
 					errors <- fmt.Errorf("读取到无效值 goroutine %d: %d", id, val)

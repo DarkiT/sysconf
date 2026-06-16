@@ -2,20 +2,20 @@ package sysconf
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/darkit/sysconf/validation"
 )
 
+var defaultFieldValidator = validation.NewDefaultValidator()
+
 // Set 设置配置值
 func (c *Config) Set(key string, value any) error {
 	if c.closed.Load() {
 		return ErrAlreadyClosed
 	}
-
-	// 创建快照用于回滚
-	snap := c.createSnapshot()
 
 	start := time.Now()
 	defer func() {
@@ -37,6 +37,15 @@ func (c *Config) Set(key string, value any) error {
 
 	// 复制当前数据，准备生成候选快照
 	currentData := c.loadData()
+	var snap *snapshot
+	if c.name != "" {
+		snap = &snapshot{
+			data:      deepCloneMap(currentData),
+			readCache: deepCloneMap(c.loadReadCache()),
+			timestamp: time.Now(),
+		}
+	}
+
 	newData := make(map[string]any, len(currentData)+1)
 
 	// 移除当前键以及同前缀的旧值，确保写入后数据一致
@@ -60,7 +69,6 @@ func (c *Config) Set(key string, value any) error {
 		c.logger.Errorf("Validation failed for key %s: %v", key, err)
 		recordErrorOperation()
 		c.mu.Unlock()
-		c.restoreSnapshot(snap)
 		return err
 	}
 
@@ -79,7 +87,9 @@ func (c *Config) Set(key string, value any) error {
 
 	// 根据写入延迟策略触发写盘
 	if err := c.scheduleWrite(); err != nil {
-		c.restoreSnapshot(snap)
+		if snap != nil {
+			c.restoreSnapshot(snap)
+		}
 		return fmt.Errorf("write failed and rolled back: %w", err)
 	}
 
@@ -166,9 +176,7 @@ func (c *Config) validateSingleFieldWithData(
 ) error {
 	// 没有验证器时使用默认验证器做基础类型校验
 	if len(validators) == 0 {
-		defaultValidator := validation.NewDefaultValidator()
-		testConfig := map[string]any{key: value}
-		return defaultValidator.Validate(testConfig)
+		return defaultFieldValidator.ValidateField(key, value)
 	}
 
 	// 构建验证上下文：当前字段 + 同级字段
@@ -229,12 +237,7 @@ func (c *Config) validatorSupportsField(validator ConfigValidator, key string) b
 	// 优先使用 StructuredValidator 的动态字段检查（避免硬编码）
 	if structValidator, ok := validator.(*validation.StructuredValidator); ok {
 		supportedFields := structValidator.GetSupportedFields()
-		for _, supportedField := range supportedFields {
-			if supportedField == fieldGroup {
-				return true
-			}
-		}
-		return false
+		return slices.Contains(supportedFields, fieldGroup)
 	}
 
 	// 对于其他验证器类型，检查是否有 HasRuleForField 方法
@@ -253,18 +256,17 @@ func (c *Config) validatorSupportsField(validator ConfigValidator, key string) b
 }
 
 // validateSingleFieldWithStructValidator 使用StructuredValidator验证单个字段
-func (c *Config) validateSingleFieldWithStructValidator(validator *validation.StructuredValidator, key string, value any) error {
-	// 直接验证单个字段，跳过required检查其他字段的逻辑
+func (c *Config) validateSingleFieldWithStructValidator(
+	validator *validation.StructuredValidator,
+	key string,
+	value any,
+) error {
+	// 直接验证当前字段；required 仍需约束当前写入值，其他字段不参与本次校验。
 	rules := validator.GetRulesForField(key)
 	stringRules := validator.GetStringRulesForField(key)
 
 	// 验证结构化规则
 	for _, rule := range rules {
-		// 对于单字段验证，跳过required检查（因为我们正在设置这个字段）
-		if rule.Type == "required" {
-			continue
-		}
-
 		if err := validation.Validate(value, rule); err != nil {
 			return fmt.Errorf("field '%s': %w", key, err)
 		}
@@ -272,11 +274,6 @@ func (c *Config) validateSingleFieldWithStructValidator(validator *validation.St
 
 	// 验证字符串规则
 	for _, ruleStr := range stringRules {
-		// 对于单字段验证，跳过required检查
-		if strings.HasPrefix(ruleStr, "required") {
-			continue
-		}
-
 		if valid, errMsg := validation.ValidateValue(value, ruleStr); !valid {
 			return fmt.Errorf("field '%s': %s", key, errMsg)
 		}
@@ -302,9 +299,6 @@ func (c *Config) SetMultiple(values map[string]any) error {
 		return nil
 	}
 
-	// 创建快照用于回滚
-	snap := c.createSnapshot()
-
 	start := time.Now()
 	defer func() {
 		recordSetOperation(time.Since(start))
@@ -327,6 +321,15 @@ func (c *Config) SetMultiple(values map[string]any) error {
 
 	// 复制当前数据
 	currentData := c.loadData()
+	var snap *snapshot
+	if c.name != "" {
+		snap = &snapshot{
+			data:      deepCloneMap(currentData),
+			readCache: deepCloneMap(c.loadReadCache()),
+			timestamp: time.Now(),
+		}
+	}
+
 	newData := make(map[string]any, len(currentData)+len(values))
 
 	// 收集所有需要移除的键前缀
@@ -372,7 +375,6 @@ func (c *Config) SetMultiple(values map[string]any) error {
 			c.logger.Errorf("Validation failed for key %s in batch operation: %v", key, err)
 			recordErrorOperation()
 			c.mu.Unlock()
-			c.restoreSnapshot(snap)
 			return fmt.Errorf("batch set failed at key '%s': %w", key, err)
 		}
 	}
@@ -394,7 +396,9 @@ func (c *Config) SetMultiple(values map[string]any) error {
 
 	// 根据写入延迟策略触发写盘
 	if err := c.scheduleWrite(); err != nil {
-		c.restoreSnapshot(snap)
+		if snap != nil {
+			c.restoreSnapshot(snap)
+		}
 		return fmt.Errorf("batch write failed and rolled back: %w", err)
 	}
 
@@ -415,6 +419,7 @@ func (c *Config) SetEnvPrefix(prefix string) error {
 	}
 	c.envOptions.Prefix = prefix
 	c.envOptions.Enabled = prefix != "" // 如果有前缀就启用环境变量
+	c.envEnabled.Store(c.envOptions.Enabled)
 	c.mu.Unlock()
 
 	// 重新初始化（不在锁内调用以避免死锁）

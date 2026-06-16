@@ -12,6 +12,8 @@ import (
 )
 
 // readConfigFile 读取配置文件（支持解密）- 线程安全版本
+//
+//nolint:unused // 保留线程安全读取入口，供同包扩展与调试路径复用。
 func (c *Config) readConfigFile() error {
 	return c.readConfigFileInternal(false)
 }
@@ -26,7 +28,7 @@ func (c *Config) readConfigFileInternal(locked bool) error {
 		return nil
 	}
 
-	configFile := filepath.Join(c.path, c.name+"."+c.mode)
+	configFile := c.configFilePath()
 
 	if _, err := os.Stat(configFile); os.IsNotExist(err) {
 		return err
@@ -78,7 +80,7 @@ func (c *Config) writeConfigFile() error {
 		return nil // 内存模式，不需要写入文件
 	}
 
-	configFile := filepath.Join(c.path, c.name+"."+c.mode)
+	configFile := c.configFilePath()
 
 	// 确保目录存在
 	if err := os.MkdirAll(filepath.Dir(configFile), 0o755); err != nil {
@@ -139,7 +141,7 @@ func (c *Config) writeConfigFileWithData(settingsData map[string]any) error {
 		return nil // 内存模式，不需要写入文件
 	}
 
-	configFile := filepath.Join(c.path, c.name+"."+c.mode)
+	configFile := c.configFilePath()
 
 	// 确保目录存在
 	if err := os.MkdirAll(filepath.Dir(configFile), 0o755); err != nil {

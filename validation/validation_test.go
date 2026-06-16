@@ -230,6 +230,13 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+func TestValidateRequiredNil(t *testing.T) {
+	err := Validate(nil, Required("required"))
+	if err == nil {
+		t.Fatal("required nil should fail")
+	}
+}
+
 func TestValidateStruct(t *testing.T) {
 	type ServerConfig struct {
 		Host     string `json:"host"`

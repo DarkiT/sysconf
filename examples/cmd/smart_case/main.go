@@ -30,7 +30,9 @@ func demoSmartCaseEnvVars() {
 
 	// 设置环境变量
 	for key, value := range testEnvVars {
-		os.Setenv(key, value)
+		if err := os.Setenv(key, value); err != nil {
+			log.Fatalf("设置环境变量 %s 失败: %v", key, err)
+		}
 		fmt.Printf("   ✅ %s=%s\n", key, value)
 	}
 
@@ -38,7 +40,7 @@ func demoSmartCaseEnvVars() {
 	defer func() {
 		fmt.Println("\n🧹 清理环境变量...")
 		for key := range testEnvVars {
-			os.Unsetenv(key)
+			_ = os.Unsetenv(key)
 		}
 	}()
 
@@ -85,8 +87,10 @@ func demoSmartCaseEnvVars() {
 // demoTraditionalMode 演示传统模式（仅支持大写环境变量）
 func demoTraditionalMode() {
 	// 设置小写环境变量（传统模式不会识别）
-	os.Setenv("traditional_test_value", "should_not_work")
-	defer os.Unsetenv("traditional_test_value")
+	if err := os.Setenv("traditional_test_value", "should_not_work"); err != nil {
+		log.Fatalf("设置传统模式环境变量失败: %v", err)
+	}
+	defer func() { _ = os.Unsetenv("traditional_test_value") }()
 
 	// 使用传统模式（禁用智能大小写匹配）
 	cfg, err := sysconf.New(

@@ -225,13 +225,24 @@ func TestConfigClose(t *testing.T) {
 	var wg sync.WaitGroup
 	const parallel = 5
 	wg.Add(parallel)
-	for i := 0; i < parallel; i++ {
+	for range parallel {
 		go func() {
 			defer wg.Done()
 			_ = cfg.Close()
 		}()
 	}
 	wg.Wait()
+}
+
+func TestConfigCloseWithLongCacheDelay(t *testing.T) {
+	cfg, err := New(
+		WithCacheTiming(time.Hour, time.Hour),
+	)
+	require.NoError(t, err)
+
+	start := time.Now()
+	require.NoError(t, cfg.Close())
+	require.Less(t, time.Since(start), 500*time.Millisecond)
 }
 
 func TestWatchWithContextMultipleSubscribers(t *testing.T) {
@@ -280,6 +291,36 @@ func TestWatchWithContextMultipleSubscribers(t *testing.T) {
 		t.Fatal("subscriber 1 should have been unsubscribed")
 	case <-time.After(300 * time.Millisecond):
 	}
+}
+
+func TestWithPathHiddenEnvFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	envFile := filepath.Join(tmpDir, ".env")
+	require.NoError(t, os.WriteFile(envFile, []byte("APP_NAME=demo\nAPP_PORT=8080\n"), 0o644))
+
+	cfg, err := New(WithPath(envFile))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cfg.Close() })
+
+	require.Equal(t, "demo", cfg.GetString("APP_NAME"))
+	require.Equal(t, 8080, cfg.GetInt("APP_PORT"))
+}
+
+func TestMemoryContentViperCompatibility(t *testing.T) {
+	cfg, err := New(WithContent(`
+app:
+  name: direct
+  port: 8080
+`))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cfg.Close() })
+
+	require.Equal(t, "direct", cfg.GetString("app.name"))
+	require.Equal(t, 8080, cfg.GetInt("app.port"))
+
+	v := cfg.Viper()
+	require.Equal(t, "direct", v.GetString("app.name"))
+	require.Equal(t, 8080, v.GetInt("app.port"))
 }
 
 // 测试全局配置实例
@@ -463,9 +504,9 @@ values:
 		const iterations = 100
 		done := make(chan bool, goroutines)
 
-		for i := 0; i < goroutines; i++ {
+		for i := range goroutines {
 			go func(id int) {
-				for j := 0; j < iterations; j++ {
+				for j := range iterations {
 					// 并发读写测试
 					key := fmt.Sprintf("test.key.%d", id)
 					if err := cfg.Set(key, j); err != nil {
@@ -478,7 +519,7 @@ values:
 		}
 
 		// 等待所有goroutine完成
-		for i := 0; i < goroutines; i++ {
+		for range goroutines {
 			<-done
 		}
 	})
@@ -536,7 +577,7 @@ func TestEnvironmentVariables(t *testing.T) {
 	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
 		t.Fatalf("创建测试目录失败: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	t.Run("环境变量优先级", func(t *testing.T) {
 		const testConfig = `
@@ -691,7 +732,7 @@ func TestComplexDataStructures(t *testing.T) {
 	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
 		t.Fatalf("创建测试目录失败: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	const complexConfig = `
 nested:
@@ -739,9 +780,9 @@ durations:
 				} `config:"level1"`
 			} `config:"nested"`
 			Arrays struct {
-				Strings []string      `config:"strings"`
-				Numbers []int         `config:"numbers"`
-				Mixed   []interface{} `config:"mixed"`
+				Strings []string `config:"strings"`
+				Numbers []int    `config:"numbers"`
+				Mixed   []any    `config:"mixed"`
 			} `config:"arrays"`
 			Maps struct {
 				Simple  map[string]string            `config:"simple"`
@@ -789,7 +830,7 @@ func TestConfigFormats(t *testing.T) {
 	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
 		t.Fatalf("创建测试目录失败: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	tests := []struct {
 		format  string
@@ -878,11 +919,11 @@ func TestConfigPersistence(t *testing.T) {
 		}
 
 		// 设置一些配置值
-		testData := map[string]interface{}{
+		testData := map[string]any{
 			"string": "value",
 			"number": 42,
 			"bool":   true,
-			"nested": map[string]interface{}{
+			"nested": map[string]any{
 				"key": "value",
 			},
 		}
@@ -920,13 +961,15 @@ func TestConfigPersistence(t *testing.T) {
 
 func BenchmarkEnvBindingOptimized(b *testing.B) {
 	// 设置大量环境变量模拟真实环境
-	for i := 0; i < 1000; i++ {
-		os.Setenv(fmt.Sprintf("LARGE_ENV_VAR_%d", i), fmt.Sprintf("value_%d", i))
+	for i := range 1000 {
+		if err := os.Setenv(fmt.Sprintf("LARGE_ENV_VAR_%d", i), fmt.Sprintf("value_%d", i)); err != nil {
+			b.Fatalf("Setenv failed: %v", err)
+		}
 	}
 
 	defer func() {
-		for i := 0; i < 1000; i++ {
-			os.Unsetenv(fmt.Sprintf("LARGE_ENV_VAR_%d", i))
+		for i := range 1000 {
+			_ = os.Unsetenv(fmt.Sprintf("LARGE_ENV_VAR_%d", i))
 		}
 	}()
 
@@ -943,13 +986,15 @@ func BenchmarkEnvBindingOptimized(b *testing.B) {
 
 func BenchmarkEnvBindingLargeEnvironment(b *testing.B) {
 	// 设置大量环境变量
-	for i := 0; i < 2000; i++ {
-		os.Setenv(fmt.Sprintf("LARGE_ENV_%d", i), fmt.Sprintf("value_%d", i))
+	for i := range 2000 {
+		if err := os.Setenv(fmt.Sprintf("LARGE_ENV_%d", i), fmt.Sprintf("value_%d", i)); err != nil {
+			b.Fatalf("Setenv failed: %v", err)
+		}
 	}
 
 	defer func() {
-		for i := 0; i < 2000; i++ {
-			os.Unsetenv(fmt.Sprintf("LARGE_ENV_%d", i))
+		for i := range 2000 {
+			_ = os.Unsetenv(fmt.Sprintf("LARGE_ENV_%d", i))
 		}
 	}()
 
@@ -1020,12 +1065,12 @@ func TestEnvOptimization(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// 设置测试环境变量
 			for i := 0; i < tt.envCount; i++ {
-				os.Setenv(fmt.Sprintf("TEST_VAR_%d", i), "value")
+				require.NoError(t, os.Setenv(fmt.Sprintf("TEST_VAR_%d", i), "value"))
 			}
 
 			defer func() {
 				for i := 0; i < tt.envCount; i++ {
-					os.Unsetenv(fmt.Sprintf("TEST_VAR_%d", i))
+					_ = os.Unsetenv(fmt.Sprintf("TEST_VAR_%d", i))
 				}
 			}()
 

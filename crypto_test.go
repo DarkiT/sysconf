@@ -75,7 +75,7 @@ func TestEncryptDecryptRoundTripWithEncodedKey(t *testing.T) {
 
 func TestEncryptFailurePropagation(t *testing.T) {
 	cfg := newTestConfig(t)
-	defer cfg.Close()
+	defer func() { _ = cfg.Close() }()
 	cfg.cryptoOptions.Enabled = true
 	cfg.crypto = failingCrypto{err: errors.New("boom")}
 

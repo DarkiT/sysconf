@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/darkit/sysconf/validation"
 )
 
 // limitValidator 简单验证器：限制 number 不得超过 10
@@ -27,7 +29,7 @@ func TestSet(t *testing.T) {
 	// 创建临时目录用于测试
 	tempDir, err := os.MkdirTemp("", "sysconf_test")
 	assert.NoError(t, err)
-	defer os.RemoveAll(tempDir)
+	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	// 测试: 基本设置功能
 	t.Run("基本设置功能", func(t *testing.T) {
@@ -66,7 +68,7 @@ func TestSet(t *testing.T) {
 		assert.Equal(t, []string{"值1", "值2", "值3"}, c.GetStringSlice("slice_key"))
 
 		// 设置映射
-		err = c.Set("map_key", map[string]interface{}{"子键1": "子值1", "子键2": 123})
+		err = c.Set("map_key", map[string]any{"子键1": "子值1", "子键2": 123})
 		assert.NoError(t, err)
 		assert.Equal(t, "子值1", c.GetString("map_key.子键1"))
 		assert.Equal(t, 123, c.GetInt("map_key.子键2"))
@@ -88,7 +90,7 @@ func TestSet(t *testing.T) {
 		assert.Equal(t, "嵌套值", c.GetString("parent.child.grandchild"))
 
 		// 整个对象覆盖
-		err = c.Set("parent.child", map[string]interface{}{
+		err = c.Set("parent.child", map[string]any{
 			"grandchild": "新嵌套值",
 			"sibling":    "兄弟值",
 		})
@@ -181,11 +183,27 @@ func TestSet(t *testing.T) {
 		assert.Equal(t, 5, cfg.GetInt("number"), "验证失败后原值应被保留")
 	})
 
+	t.Run("结构化验证器 required 不允许空值", func(t *testing.T) {
+		validator := validation.NewRuleValidator("required validator").
+			AddStringRule("server.host", "required")
+		cfg, err := New(
+			WithContent("server:\n  host: localhost\n"),
+			WithValidator(validator),
+		)
+		if !assert.NoError(t, err, "required 验证测试初始化失败") {
+			t.FailNow()
+		}
+
+		err = cfg.Set("server.host", "")
+		assert.Error(t, err)
+		assert.Equal(t, "localhost", cfg.GetString("server.host"))
+	})
+
 	// 测试: 写入失败回滚
 	t.Run("写入失败自动回滚", func(t *testing.T) {
 		roDir, err := os.MkdirTemp("", "deny_write")
 		assert.NoError(t, err)
-		defer os.RemoveAll(roDir)
+		defer func() { _ = os.RemoveAll(roDir) }()
 
 		configFile := filepath.Join(roDir, "rollback_write.yaml")
 		assert.NoError(t, os.WriteFile(configFile, []byte("number: 1\n"), 0o400)) // 只读文件
@@ -221,14 +239,14 @@ func TestSet(t *testing.T) {
 		}
 
 		done := make(chan struct{})
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			go func(i int) {
 				_ = cfg.Set(fmt.Sprintf("a.%d", i), i)
 				done <- struct{}{}
 			}(i)
 		}
 
-		for i := 0; i < 10; i++ {
+		for range 10 {
 			<-done
 		}
 

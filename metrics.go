@@ -2,6 +2,7 @@ package sysconf
 
 import (
 	"fmt"
+	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -146,9 +147,7 @@ func (m *Metrics) GetStats() MetricsSnapshot {
 	}
 
 	// 复制操作时间
-	for k, v := range m.OperationTimes {
-		stats.OperationTimes[k] = v
-	}
+	maps.Copy(stats.OperationTimes, m.OperationTimes)
 
 	// 复制操作统计
 	for k, v := range m.OperationStats {

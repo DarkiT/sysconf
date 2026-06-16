@@ -31,7 +31,7 @@ database:
 
 func TestCacheLifecycleAndNestedLookup(t *testing.T) {
 	cfg := newTestConfig(t)
-	defer cfg.Close()
+	defer func() { _ = cfg.Close() }()
 
 	// 预热缓存并验证命中
 	cfg.cacheEnabled.Store(true)
@@ -65,7 +65,7 @@ func TestCacheLifecycleAndNestedLookup(t *testing.T) {
 
 func TestMarshalDeepMergeAndKeys(t *testing.T) {
 	cfg := newTestConfig(t)
-	defer cfg.Close()
+	defer func() { _ = cfg.Close() }()
 
 	type App struct {
 		Name  string `config:"name"`
@@ -96,7 +96,7 @@ func TestMarshalDeepMergeAndKeys(t *testing.T) {
 
 func TestConfigValidatorApis(t *testing.T) {
 	cfg := newTestConfig(t)
-	defer cfg.Close()
+	defer func() { _ = cfg.Close() }()
 
 	cfg.AddValidator(ConfigValidateFunc(func(config map[string]any) error { return nil }))
 	cfg.AddValidateFunc(func(config map[string]any) error { return fmt.Errorf("boom") })
@@ -240,7 +240,7 @@ func TestErrorHandlingHelpers(t *testing.T) {
 
 func TestMarshalToINIAndConfigFileHelpers(t *testing.T) {
 	cfg := newTestConfig(t)
-	defer cfg.Close()
+	defer func() { _ = cfg.Close() }()
 
 	settings := map[string]any{
 		"server": map[string]any{"port": 8080},
@@ -276,7 +276,7 @@ func TestMarshalToINIAndConfigFileHelpers(t *testing.T) {
 
 func TestConfigMetadataAccessors(t *testing.T) {
 	cfg := newTestConfig(t)
-	defer cfg.Close()
+	defer func() { _ = cfg.Close() }()
 
 	// 仅验证关键元数据非空
 	if cfg.Viper() == nil {

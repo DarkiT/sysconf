@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -131,7 +130,7 @@ func (c *Config) getConfigFilePath() string {
 	if c.name == "" {
 		return "内存配置"
 	}
-	return filepath.Join(c.path, c.name+"."+c.mode)
+	return c.configFilePath()
 }
 
 // IsConfigError 检查是否为配置错误

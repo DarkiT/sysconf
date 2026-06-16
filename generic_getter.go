@@ -35,6 +35,14 @@ type typeInfo struct {
 //	port := cfg.GetAs[int]("database.port", 5432)
 //	timeout := cfg.GetAs[time.Duration]("timeout", 30*time.Second)
 func GetAs[T any](c *Config, key string, defaultValue ...T) T {
+	if c == nil {
+		if len(defaultValue) > 0 {
+			return defaultValue[0]
+		}
+		var zero T
+		return zero
+	}
+
 	if key == "" {
 		if len(defaultValue) > 0 {
 			return defaultValue[0]
@@ -79,6 +87,10 @@ func GetAs[T any](c *Config, key string, defaultValue ...T) T {
 func GetAsWithError[T any](cfg *Config, key string) (T, error) {
 	var zero T
 
+	if cfg == nil {
+		return zero, fmt.Errorf("config cannot be nil")
+	}
+
 	if key == "" {
 		return zero, fmt.Errorf("key cannot be empty")
 	}
@@ -104,25 +116,22 @@ func GetAsWithError[T any](cfg *Config, key string) (T, error) {
 //	features := cfg.GetSliceAs[string]("server.features")
 //	ports := cfg.GetSliceAs[int]("server.ports")
 func GetSliceAs[T any](c *Config, key string) []T {
-	if key == "" {
+	if c == nil || key == "" {
 		return []T{}
 	}
 
-	c.mu.RLock()
-	val := c.viper.Get(key)
-	c.mu.RUnlock()
-
-	if val == nil {
+	val, exists := c.getRaw(key)
+	if !exists || val == nil {
 		return []T{}
 	}
 
 	// 尝试直接类型断言
 	if slice, ok := val.([]T); ok {
-		return slice
+		return append([]T(nil), slice...)
 	}
 
 	// 处理interface{}切片
-	if interfaceSlice, ok := val.([]interface{}); ok {
+	if interfaceSlice, ok := val.([]any); ok {
 		result := make([]T, 0, len(interfaceSlice))
 		for _, item := range interfaceSlice {
 			if converted, ok := convertValue[T](item); ok {
@@ -150,8 +159,7 @@ func GetSliceAs[T any](c *Config, key string) []T {
 
 // getTypeInfo 获取类型信息（带缓存），使用 sync.Map 实现无锁读取
 func getTypeInfo[T any]() *typeInfo {
-	var zero T
-	targetType := reflect.TypeOf(zero)
+	targetType := reflect.TypeFor[T]()
 
 	// 无锁快速路径：从 sync.Map 读取
 	if cached, ok := typeCache.Load(targetType); ok {
@@ -165,8 +173,8 @@ func getTypeInfo[T any]() *typeInfo {
 		isInt:      targetType.Kind() >= reflect.Int && targetType.Kind() <= reflect.Int64,
 		isFloat:    targetType.Kind() == reflect.Float32 || targetType.Kind() == reflect.Float64,
 		isBool:     targetType.Kind() == reflect.Bool,
-		isDuration: targetType == reflect.TypeOf(time.Duration(0)),
-		isTime:     targetType == reflect.TypeOf(time.Time{}),
+		isDuration: targetType == reflect.TypeFor[time.Duration](),
+		isTime:     targetType == reflect.TypeFor[time.Time](),
 	}
 
 	// 为每种类型预编译转换函数
@@ -286,11 +294,11 @@ func buildConverter[T any](info *typeInfo) converterFunc {
 }
 
 // convertValue 通用类型转换函数，使用预编译转换器
-func convertValue[T any](val interface{}) (T, bool) {
+func convertValue[T any](val any) (T, bool) {
 	var zero T
 
 	// 快速路径：直接类型匹配
-	if converted, ok := val.(T); ok {
+	if converted, ok := deepCloneValue(val).(T); ok {
 		return converted, true
 	}
 
@@ -315,7 +323,7 @@ func convertValue[T any](val interface{}) (T, bool) {
 }
 
 // convertTo 将任意值尝试转换为目标类型，返回错误以便上层处理
-func convertTo[T any](val interface{}) (T, error) {
+func convertTo[T any](val any) (T, error) {
 	if converted, ok := convertValue[T](val); ok {
 		return converted, nil
 	}
@@ -340,13 +348,14 @@ func MustGetAs[T any](c *Config, key string) T {
 //
 //	port := cfg.GetWithFallback[int]("server.port", "app.port", "port")
 func GetWithFallback[T any](c *Config, keys ...string) T {
+	if c == nil {
+		var zero T
+		return zero
+	}
+
 	for _, key := range keys {
 		if key != "" {
-			c.mu.RLock()
-			val := c.viper.Get(key)
-			c.mu.RUnlock()
-
-			if val != nil {
+			if val, exists := c.getRaw(key); exists && val != nil {
 				if converted, ok := convertValue[T](val); ok {
 					return converted
 				}

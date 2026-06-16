@@ -43,7 +43,7 @@ func TestMetricsConcurrency(t *testing.T) {
 	iterations := 100
 
 	// 并发执行 Get、Set、Error 和 Operation 记录
-	for i := 0; i < iterations; i++ {
+	for i := range iterations {
 		wg.Add(4)
 		go func() {
 			defer wg.Done()
@@ -64,12 +64,10 @@ func TestMetricsConcurrency(t *testing.T) {
 	}
 
 	// 同时并发读取统计
-	for i := 0; i < iterations; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range iterations {
+		wg.Go(func() {
 			_ = m.GetStats()
-		}()
+		})
 	}
 
 	wg.Wait()

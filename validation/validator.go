@@ -46,6 +46,30 @@ func (d *DefaultValidator) Validate(config map[string]any) error {
 	return d.validateRecursive("", config)
 }
 
+// ValidateField 验证单个配置字段。
+func (d *DefaultValidator) ValidateField(key string, value any) error {
+	if nestedMap, ok := value.(map[string]any); ok {
+		return d.validateRecursive(key, nestedMap)
+	}
+
+	if err := d.validatePort(key, value); err != nil {
+		return err
+	}
+	if err := d.validateTimeout(key, value); err != nil {
+		return err
+	}
+	if err := d.validateURL(key, value); err != nil {
+		return err
+	}
+	if err := d.validateEmail(key, value); err != nil {
+		return err
+	}
+	if err := d.validateHost(key, value); err != nil {
+		return err
+	}
+	return nil
+}
+
 // GetName 获取验证器名称
 func (d *DefaultValidator) GetName() string {
 	return d.name
@@ -68,20 +92,7 @@ func (d *DefaultValidator) validateRecursive(prefix string, config map[string]an
 			continue
 		}
 
-		// 执行各种验证规则
-		if err := d.validatePort(fullKey, value); err != nil {
-			return err
-		}
-		if err := d.validateTimeout(fullKey, value); err != nil {
-			return err
-		}
-		if err := d.validateURL(fullKey, value); err != nil {
-			return err
-		}
-		if err := d.validateEmail(fullKey, value); err != nil {
-			return err
-		}
-		if err := d.validateHost(fullKey, value); err != nil {
+		if err := d.ValidateField(fullKey, value); err != nil {
 			return err
 		}
 	}
@@ -124,7 +135,11 @@ func (d *DefaultValidator) validateURL(key string, value any) error {
 				!strings.HasPrefix(urlStr, "tcp://") &&
 				!strings.HasPrefix(urlStr, "ws://") &&
 				!strings.HasPrefix(urlStr, "wss://") {
-				return fmt.Errorf("URL '%s' value '%s' is invalid format (must start with http://, https://, tcp://, ws://, wss://)", key, urlStr)
+				return fmt.Errorf(
+					"URL '%s' value '%s' is invalid format (must start with http://, https://, tcp://, ws://, wss://)",
+					key,
+					urlStr,
+				)
 			}
 		}
 	}

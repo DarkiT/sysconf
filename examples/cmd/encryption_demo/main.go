@@ -62,7 +62,9 @@ func demoBasicEncryption(content string) {
 	}
 
 	var appConfig Config
-	config.Unmarshal(&appConfig)
+	if err := config.Unmarshal(&appConfig); err != nil {
+		log.Fatalf("解析加密配置失败: %v", err)
+	}
 
 	fmt.Printf("   加密类型: %s\n", config.GetCryptoType())
 	fmt.Printf("   应用名称: %s\n", appConfig.App.Name)
@@ -96,7 +98,9 @@ func demoCustomCrypto(content string) {
 	}
 
 	var appConfig Config
-	config.Unmarshal(&appConfig)
+	if err := config.Unmarshal(&appConfig); err != nil {
+		log.Fatalf("解析自定义加密配置失败: %v", err)
+	}
 
 	fmt.Printf("   加密类型: %s\n", config.GetCryptoType())
 	fmt.Printf("   应用名称: %s\n", appConfig.App.Name)
@@ -111,20 +115,33 @@ func performanceTest(content string) {
 	iterations := 1000
 
 	// 测试默认ChaCha20加密性能
-	defaultCrypto, _ := sysconf.NewDefaultCrypto("test_key")
+	defaultCrypto, err := sysconf.NewDefaultCrypto("test_key")
+	if err != nil {
+		log.Fatalf("创建默认加密器失败: %v", err)
+	}
 	start := time.Now()
-	for i := 0; i < iterations; i++ {
-		encrypted, _ := defaultCrypto.Encrypt(testData)
-		defaultCrypto.Decrypt(encrypted)
+	for range iterations {
+		encrypted, err := defaultCrypto.Encrypt(testData)
+		if err != nil {
+			log.Fatalf("默认加密失败: %v", err)
+		}
+		if _, err := defaultCrypto.Decrypt(encrypted); err != nil {
+			log.Fatalf("默认解密失败: %v", err)
+		}
 	}
 	defaultTime := time.Since(start)
 
 	// 测试自定义简单加密性能
 	customCrypto := &SimpleXORCrypto{key: []byte("test_key_1234567890abcdef")}
 	start = time.Now()
-	for i := 0; i < iterations; i++ {
-		encrypted, _ := customCrypto.Encrypt(testData)
-		customCrypto.Decrypt(encrypted)
+	for range iterations {
+		encrypted, err := customCrypto.Encrypt(testData)
+		if err != nil {
+			log.Fatalf("自定义加密失败: %v", err)
+		}
+		if _, err := customCrypto.Decrypt(encrypted); err != nil {
+			log.Fatalf("自定义解密失败: %v", err)
+		}
 	}
 	customTime := time.Since(start)
 
