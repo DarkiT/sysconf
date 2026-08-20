@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 	"time"
@@ -335,6 +336,10 @@ func SetFieldValue(field reflect.Value, value string) error {
 			}
 
 			// 如果是整数，假设它是秒数而不是纳秒
+			// 乘以 1e9 前先判溢出，避免大数值静默溢出 int64 得到负 duration
+			if v > math.MaxInt64/int64(time.Second) || v < math.MinInt64/int64(time.Second) {
+				return fmt.Errorf("duration value out of range: %s", value)
+			}
 			field.SetInt(v * int64(time.Second))
 			return nil
 		}
@@ -344,12 +349,31 @@ func SetFieldValue(field reflect.Value, value string) error {
 		if err != nil {
 			return fmt.Errorf("invalid integer value: %s", value)
 		}
+		// 窄整型溢出检查：SetInt 对 int8/int16/int32 是静默截断而非 panic，需显式拦截
+		if field.OverflowInt(v) {
+			return fmt.Errorf("integer value %d overflows %s", v, field.Kind())
+		}
 		field.SetInt(v)
+		return nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		// 补齐 Uint 分支：此前缺失，导致任何带 default tag 的 uint 字段（如 Port uint16）
+		// 都落到 default 返回 "unsupported field type"，使 SetDefaultValues 整体失败
+		v, err := cast.ToUint64E(value)
+		if err != nil {
+			return fmt.Errorf("invalid unsigned integer value: %s", value)
+		}
+		if field.OverflowUint(v) {
+			return fmt.Errorf("unsigned integer value %d overflows %s", v, field.Kind())
+		}
+		field.SetUint(v)
 		return nil
 	case reflect.Float32, reflect.Float64:
 		v, err := cast.ToFloat64E(value)
 		if err != nil {
 			return fmt.Errorf("invalid float value: %s", value)
+		}
+		if field.OverflowFloat(v) {
+			return fmt.Errorf("float value %g overflows %s", v, field.Kind())
 		}
 		field.SetFloat(v)
 		return nil
@@ -375,14 +399,25 @@ func SetFieldValue(field reflect.Value, value string) error {
 // ValidateStruct 验证结构体字段
 func ValidateStruct(obj any) error {
 	v := reflect.ValueOf(obj)
-	if v.Kind() == reflect.Pointer {
+	for v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return nil
+		}
 		v = v.Elem()
+	}
+	// 非结构体输入直接返回，避免对 *int/map/slice/基础类型调用 NumField() 触发 panic
+	if v.Kind() != reflect.Struct {
+		return nil
 	}
 
 	t := v.Type()
 	for i := 0; i < v.NumField(); i++ {
-		field := v.Field(i)
 		fieldType := t.Field(i)
+		// 跳过未导出字段：对其取值 Set/Interface() 会 panic（value obtained from unexported field）
+		if !fieldType.IsExported() {
+			continue
+		}
+		field := v.Field(i)
 
 		// 检查当前字段是否必填（支持 required:"true" / required:"required" / validate:"required"）
 		if requiredTag := fieldType.Tag.Get("required"); requiredTag == "true" || requiredTag == "required" {

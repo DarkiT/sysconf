@@ -24,6 +24,8 @@ var validators = map[string]RuleValidator{
 	"required":    validateRequired,
 	"string":      validateString,
 	"number":      validateNumber,
+	"boolean":     validateBoolean,
+	"bool":        validateBoolean,
 	"email":       validateEmail,
 	"url":         validateURL,
 	"range":       validateRange,
@@ -92,6 +94,24 @@ func validateString(value any, _ string) (bool, string) {
 }
 
 // validateNumber 验证数字类型
+// validateBoolean 验证值是否为布尔类型。
+// 此前 boolean 规则被 predefined.go 引用（server.ssl.enabled / api.rate_limit.enabled）
+// 却从未注册，导致 WebServer/API 预定义校验器必然报 "unknown validation rule"。
+// 同时兼容字符串形态（env 覆盖场景下 bool 常以字符串 "true"/"false" 出现）。
+func validateBoolean(value any, _ string) (bool, string) {
+	switch v := value.(type) {
+	case bool:
+		return true, ""
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "false", "1", "0", "yes", "no", "on", "off":
+			return true, ""
+		}
+		return false, "field must be boolean type"
+	}
+	return false, "field must be boolean type"
+}
+
 func validateNumber(value any, _ string) (bool, string) {
 	switch v := value.(type) {
 	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:

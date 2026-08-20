@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	toml "github.com/pelletier/go-toml/v2"
 	"gopkg.in/yaml.v3"
 )
 
@@ -115,7 +116,7 @@ func (c *Config) writeConfigFile() error {
 
 // marshalConfig 将viper配置序列化为指定格式的字节数组
 func (c *Config) marshalConfig() ([]byte, error) {
-	allSettings := c.snapshotAllSettings()
+	allSettings := c.snapshotPersistentSettings()
 
 	switch c.mode {
 	case "yaml", "yml":
@@ -125,6 +126,10 @@ func (c *Config) marshalConfig() ([]byte, error) {
 	case "ini":
 		// 对于INI格式，我们需要特殊处理
 		return c.marshalToINI(allSettings)
+	case "toml":
+		return toml.Marshal(allSettings)
+	case "env", "dotenv":
+		return marshalDotenv(allSettings)
 	default:
 		return nil, fmt.Errorf("unsupported config format: %s", c.mode)
 	}
@@ -185,9 +190,27 @@ func (c *Config) marshalConfigWithData(settings map[string]any) ([]byte, error) 
 	case "ini":
 		// 对于INI格式，我们需要特殊处理
 		return c.marshalToINI(settings)
+	case "toml":
+		return toml.Marshal(settings)
+	case "env", "dotenv":
+		return marshalDotenv(settings)
 	default:
 		return nil, fmt.Errorf("unsupported config format: %s", c.mode)
 	}
+}
+
+func marshalDotenv(settings map[string]any) ([]byte, error) {
+	var buf bytes.Buffer
+	for key, value := range settings {
+		if nested, ok := value.(map[string]any); ok {
+			for child, childVal := range nested {
+				fmt.Fprintf(&buf, "%s_%s=%v\n", key, child, childVal)
+			}
+			continue
+		}
+		fmt.Fprintf(&buf, "%s=%v\n", key, value)
+	}
+	return buf.Bytes(), nil
 }
 
 // marshalToINI 将配置转换为INI格式

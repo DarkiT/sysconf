@@ -207,6 +207,7 @@ api:
 	cfg, err := sysconf.New(
 		sysconf.WithMode("yaml"),
 		sysconf.WithContent(appConfig),
+		sysconf.WithSkipInitValidation(),
 		sysconf.WithValidators(
 			validation.NewDatabaseValidator(),
 			validation.NewWebServerValidator(),
@@ -267,6 +268,7 @@ log:
 	cfg, err := sysconf.New(
 		sysconf.WithMode("yaml"),
 		sysconf.WithContent(webAppConfig),
+		sysconf.WithSkipInitValidation(),
 		sysconf.WithValidator(composite),
 	)
 	if err != nil {

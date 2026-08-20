@@ -108,6 +108,7 @@ func TestGetters(t *testing.T) {
 
 		// 默认值
 		assert.Empty(t, c.GetStringSlice("non_existent"))
+		assert.Equal(t, []string{"x"}, c.GetStringSlice("non_existent", []string{"x"}))
 	})
 
 	// 测试: GetStringMap 和 GetStringMapString 方法
@@ -151,6 +152,8 @@ func TestGetters(t *testing.T) {
 
 		// 默认值
 		assert.Equal(t, time.Time{}, c.GetTime("non_existent"))
+		fallback := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
+		assert.Equal(t, fallback, c.GetTime("non_existent", fallback))
 	})
 
 	// 测试: GetDuration 方法
@@ -164,6 +167,7 @@ func TestGetters(t *testing.T) {
 
 		// 默认值
 		assert.Equal(t, time.Duration(0), c.GetDuration("non_existent"))
+		assert.Equal(t, 30*time.Second, c.GetDuration("non_existent", 30*time.Second))
 	})
 
 	t.Run("GetBoolSlice_IntSlice_FloatSlice_and_GetWithError", func(t *testing.T) {
@@ -204,9 +208,9 @@ func TestGetters(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, "v", val)
 		_, err = cfg.GetWithError("missing")
-		assert.Error(t, err)
+		assert.ErrorIs(t, err, ErrKeyNotFound)
 		_, err = cfg.GetWithError("")
-		assert.Error(t, err)
+		assert.ErrorIs(t, err, ErrEmptyKey)
 	})
 }
 

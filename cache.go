@@ -175,12 +175,16 @@ func (c *Config) scheduleCacheUpdate(delay time.Duration) {
 			c.cacheTimer = nil
 			c.cacheMu.Unlock()
 
-			select {
-			case <-c.stopChan:
-				return
-			default:
-				c.updateReadCache()
-			}
+			// 重建工作纳入 wg 追踪，确保 Close 的 wg.Wait() 能等到它完成。
+			// 在回调真正 fire 后才 wg.Add，避免 cacheTimer.Stop() 阻止 fire 时留下未配平计数。
+			c.wg.Go(func() {
+				select {
+				case <-c.stopChan:
+					return
+				default:
+					c.updateReadCache()
+				}
+			})
 		})
 		return
 	}

@@ -60,8 +60,8 @@ func (c *Config) Unmarshal(obj any, key ...string) error {
 		return err
 	}
 
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	// 无需外层 RLock:getRaw / snapshotAllSettings 各自并发安全,函数其余只操作用户 obj;
+	// 且外层持 RLock 会在 getRaw→fetchFromViperOrEnv 处重入 RWMutex,与并发 Set 竞争时死锁。
 
 	// 如果是结构体指针，则设置默认值
 	if isStructPtr {
@@ -104,9 +104,15 @@ func (c *Config) Unmarshal(obj any, key ...string) error {
 		if val, exists := c.getRaw(configKey); exists {
 			decodeInput = val
 		}
+		if isStructPtr {
+			decodeInput = c.injectStructLayerValues(decodeInput, obj, configKey)
+		}
 	} else {
 		c.logger.Debugf("Getting all config settings")
 		decodeInput = c.snapshotAllSettings()
+		if isStructPtr {
+			decodeInput = c.injectStructLayerValues(decodeInput, obj, "")
+		}
 	}
 
 	// 如果没有配置数据，保持默认值
@@ -144,6 +150,13 @@ func (c *Config) Unmarshal(obj any, key ...string) error {
 
 	c.logger.Infof("Config parsed successfully")
 	return nil
+}
+
+// MustUnmarshal 将配置解析到结构体，失败时 panic。
+func (c *Config) MustUnmarshal(obj any, key ...string) {
+	if err := c.Unmarshal(obj, key...); err != nil {
+		panic(err)
+	}
 }
 
 func isEmptyUnmarshalInput(input any) bool {

@@ -26,7 +26,7 @@ func (f ValidatorFunc) Validate(config map[string]any) error {
 
 // GetName 实现 Validator 接口
 func (f ValidatorFunc) GetName() string {
-	return "函数式验证器"
+	return "functional validator"
 }
 
 // DefaultValidator 默认验证器，包含基础的配置验证规则
@@ -37,7 +37,7 @@ type DefaultValidator struct {
 // NewDefaultValidator 创建默认验证器
 func NewDefaultValidator() *DefaultValidator {
 	return &DefaultValidator{
-		name: "默认系统验证器",
+		name: "default system validator",
 	}
 }
 
@@ -146,16 +146,30 @@ func (d *DefaultValidator) validateURL(key string, value any) error {
 	return nil
 }
 
-// validateEmail 验证邮箱格式
+// validateEmail 验证邮箱格式。
+// 只匹配叶子键（email / mail / *_email / *_mail），避免 email.smtp.host 这类路径被误判。
 func (d *DefaultValidator) validateEmail(key string, value any) error {
-	if strings.Contains(key, "email") || strings.Contains(key, "mail") {
-		if emailStr, ok := value.(string); ok && emailStr != "" {
-			if !strings.Contains(emailStr, "@") || !strings.Contains(emailStr, ".") {
-				return fmt.Errorf("email '%s' value '%s' is invalid format", key, emailStr)
-			}
-		}
+	if !isEmailLeafKey(key) {
+		return nil
+	}
+	emailStr, ok := value.(string)
+	if !ok || emailStr == "" {
+		return nil
+	}
+	if !strings.Contains(emailStr, "@") || !strings.Contains(emailStr, ".") {
+		return fmt.Errorf("email '%s' value '%s' is invalid format", key, emailStr)
 	}
 	return nil
+}
+
+func isEmailLeafKey(key string) bool {
+	leaf := key
+	if i := strings.LastIndex(key, "."); i >= 0 {
+		leaf = key[i+1:]
+	}
+	leaf = strings.ToLower(leaf)
+	return leaf == "email" || leaf == "mail" ||
+		strings.HasSuffix(leaf, "_email") || strings.HasSuffix(leaf, "_mail")
 }
 
 // validateHost 验证主机名格式

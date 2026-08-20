@@ -53,6 +53,7 @@ func main() {
 		sysconf.WithContent(demoConfig),
 		sysconf.WithEncryption(""), // 自动生成密钥
 		sysconf.WithEnvOptions(sysconf.EnvOptions{Prefix: "APP", Enabled: true, SmartCase: true}),
+		sysconf.WithSkipInitValidation(),
 		sysconf.WithValidators(
 			validation.NewDatabaseValidator(),
 			validation.NewWebServerValidator(),

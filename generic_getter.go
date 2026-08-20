@@ -19,6 +19,7 @@ type typeInfo struct {
 	kind       reflect.Kind
 	isString   bool
 	isInt      bool
+	isUint     bool
 	isFloat    bool
 	isBool     bool
 	isDuration bool
@@ -26,53 +27,30 @@ type typeInfo struct {
 	converter  converterFunc // 预编译的转换函数
 }
 
-// GetAs 泛型获取配置值，提供类型安全的访问方式
-// 支持类型: string, int, int32, int64, float32, float64, bool, time.Duration, time.Time
+// GetAs 泛型获取配置值，提供类型安全的访问方式。
+// 这是包级函数（Go 不允许泛型方法），与 Get/GetInt 走同一条 getRaw 路径：
+// 环境变量优先于缓存与文件，避免 GetAs 与 Get* 读到不同来源。
+// 支持类型: string, int, int8..int64, uint..uint64, float32/64, bool, time.Duration, time.Time
 //
 // 使用示例:
 //
-//	host := cfg.GetAs[string]("database.host", "localhost")
-//	port := cfg.GetAs[int]("database.port", 5432)
-//	timeout := cfg.GetAs[time.Duration]("timeout", 30*time.Second)
+//	host := sysconf.GetAs[string](cfg, "database.host", "localhost")
+//	port := sysconf.GetAs[int](cfg, "database.port", 5432)
+//	timeout := sysconf.GetAs[time.Duration](cfg, "timeout", 30*time.Second)
 func GetAs[T any](c *Config, key string, defaultValue ...T) T {
-	if c == nil {
-		if len(defaultValue) > 0 {
-			return defaultValue[0]
-		}
-		var zero T
-		return zero
+	if c == nil || key == "" {
+		return defaultOrZero(defaultValue)
 	}
 
-	if key == "" {
-		if len(defaultValue) > 0 {
-			return defaultValue[0]
-		}
-		var zero T
-		return zero
-	}
-
-	// 优先从缓存获取
-	if val, exists := c.getCachedValue(key); exists {
-		if converted, ok := convertValue[T](val); ok {
-			return converted
-		}
-	}
-
-	// 使用完整的 getRaw 查找链（包含嵌套查找、环境变量回退）
 	val, exists := c.getRaw(key)
 	if !exists || val == nil {
-		if len(defaultValue) > 0 {
-			return defaultValue[0]
-		}
-		var zero T
-		return zero
+		return defaultOrZero(defaultValue)
 	}
 
 	if converted, ok := convertValue[T](val); ok {
 		return converted
 	}
 
-	// 转换失败，返回默认值或零值
 	if len(defaultValue) > 0 {
 		c.logger.Warnf("Failed to convert value for key '%s', using default", key)
 		return defaultValue[0]
@@ -83,26 +61,25 @@ func GetAs[T any](c *Config, key string, defaultValue ...T) T {
 	return zero
 }
 
-// GetAsWithError 返回转换后的值和错误，便于区分键不存在或转换失败的具体原因
+// GetAsWithError 返回转换后的值和错误，便于用 errors.Is 区分键不存在或转换失败。
 func GetAsWithError[T any](cfg *Config, key string) (T, error) {
 	var zero T
 
 	if cfg == nil {
-		return zero, fmt.Errorf("config cannot be nil")
+		return zero, ErrNilConfig
 	}
-
 	if key == "" {
-		return zero, fmt.Errorf("key cannot be empty")
+		return zero, ErrEmptyKey
 	}
 
-	raw := cfg.Get(key)
-	if raw == nil {
-		return zero, fmt.Errorf("key %q not found", key)
+	val, exists := cfg.getRaw(key)
+	if !exists || val == nil {
+		return zero, fmt.Errorf("%w: %q", ErrKeyNotFound, key)
 	}
 
-	converted, err := convertTo[T](raw)
+	converted, err := convertTo[T](val)
 	if err != nil {
-		return zero, fmt.Errorf("failed to convert key %q to %T: %w", key, zero, err)
+		return zero, fmt.Errorf("%w: key %q to %T: %v", ErrConversion, key, zero, err)
 	}
 
 	return converted, nil
@@ -113,16 +90,16 @@ func GetAsWithError[T any](cfg *Config, key string) (T, error) {
 //
 // 使用示例:
 //
-//	features := cfg.GetSliceAs[string]("server.features")
-//	ports := cfg.GetSliceAs[int]("server.ports")
-func GetSliceAs[T any](c *Config, key string) []T {
+//	features := sysconf.GetSliceAs[string](cfg, "server.features")
+//	ports := sysconf.GetSliceAs[int](cfg, "server.ports", []int{8080})
+func GetSliceAs[T any](c *Config, key string, def ...[]T) []T {
 	if c == nil || key == "" {
-		return []T{}
+		return firstSliceDefault(def)
 	}
 
 	val, exists := c.getRaw(key)
 	if !exists || val == nil {
-		return []T{}
+		return firstSliceDefault(def)
 	}
 
 	// 尝试直接类型断言
@@ -154,7 +131,7 @@ func GetSliceAs[T any](c *Config, key string) []T {
 		return result
 	}
 
-	return []T{}
+	return firstSliceDefault(def)
 }
 
 // getTypeInfo 获取类型信息（带缓存），使用 sync.Map 实现无锁读取
@@ -171,6 +148,7 @@ func getTypeInfo[T any]() *typeInfo {
 		kind:       targetType.Kind(),
 		isString:   targetType.Kind() == reflect.String,
 		isInt:      targetType.Kind() >= reflect.Int && targetType.Kind() <= reflect.Int64,
+		isUint:     targetType.Kind() >= reflect.Uint && targetType.Kind() <= reflect.Uint64,
 		isFloat:    targetType.Kind() == reflect.Float32 || targetType.Kind() == reflect.Float64,
 		isBool:     targetType.Kind() == reflect.Bool,
 		isDuration: targetType == reflect.TypeFor[time.Duration](),
@@ -253,10 +231,64 @@ func buildConverter[T any](info *typeInfo) converterFunc {
 				}
 				return nil, false
 			}
+		case reflect.Int8:
+			return func(val any) (any, bool) {
+				if i, err := cast.ToInt8E(val); err == nil {
+					return i, true
+				}
+				return nil, false
+			}
+		case reflect.Int16:
+			return func(val any) (any, bool) {
+				if i, err := cast.ToInt16E(val); err == nil {
+					return i, true
+				}
+				return nil, false
+			}
 		default:
 			return func(val any) (any, bool) {
 				if i, err := cast.ToIntE(val); err == nil {
 					return i, true
+				}
+				return nil, false
+			}
+		}
+	case info.isUint:
+		// 补齐无符号整型：此前 uint/uint8/.../uint64 不满足 isInt，直接落 default 恒返回 false，
+		// GetAs[uint] 静默退成零值、MustGetAs[uint] 必 panic。
+		switch info.kind {
+		case reflect.Uint8:
+			return func(val any) (any, bool) {
+				if u, err := cast.ToUint8E(val); err == nil {
+					return u, true
+				}
+				return nil, false
+			}
+		case reflect.Uint16:
+			return func(val any) (any, bool) {
+				if u, err := cast.ToUint16E(val); err == nil {
+					return u, true
+				}
+				return nil, false
+			}
+		case reflect.Uint32:
+			return func(val any) (any, bool) {
+				if u, err := cast.ToUint32E(val); err == nil {
+					return u, true
+				}
+				return nil, false
+			}
+		case reflect.Uint64:
+			return func(val any) (any, bool) {
+				if u, err := cast.ToUint64E(val); err == nil {
+					return u, true
+				}
+				return nil, false
+			}
+		default:
+			return func(val any) (any, bool) {
+				if u, err := cast.ToUintE(val); err == nil {
+					return u, true
 				}
 				return nil, false
 			}
@@ -346,7 +378,7 @@ func MustGetAs[T any](c *Config, key string) T {
 //
 // 使用示例:
 //
-//	port := cfg.GetWithFallback[int]("server.port", "app.port", "port")
+//	port := sysconf.GetWithFallback[int](cfg, "server.port", "app.port", "port")
 func GetWithFallback[T any](c *Config, keys ...string) T {
 	if c == nil {
 		var zero T

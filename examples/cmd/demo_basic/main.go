@@ -15,6 +15,8 @@ func main() {
 		sysconf.WithMode("yaml"),
 		sysconf.WithContent(defaultConfig),
 		sysconf.WithEnvOptions(sysconf.EnvOptions{Prefix: "APP", Enabled: true, SmartCase: true}),
+		// 预定义验证器主要用于 Set 字段拦截；全量启动校验请配齐必填项后去掉 Skip。
+		sysconf.WithSkipInitValidation(),
 		sysconf.WithValidators(validation.NewDatabaseValidator(), validation.NewWebServerValidator()),
 	)
 	if err != nil {

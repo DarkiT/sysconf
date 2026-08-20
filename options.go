@@ -75,12 +75,15 @@ func WithEnvOptions(opts EnvOptions) Option {
 	}
 }
 
-// WithEnv 便利函数：启用环境变量并设置前缀，默认开启智能大小写匹配
+// WithEnv 启用带前缀的环境变量覆盖，并默认开启智能大小写匹配。
+// 前缀为空时不会启用环境变量：无前缀会盲查 PATH/HOME/USER 等系统变量并静默覆盖配置。
+// 若确需无前缀，请显式使用 WithEnvOptions。
 func WithEnv(prefix string) Option {
+	prefix = strings.TrimSpace(prefix)
 	return WithEnvOptions(EnvOptions{
 		Prefix:    prefix,
-		Enabled:   true,
-		SmartCase: true, // 🆕 默认启用智能大小写匹配
+		Enabled:   prefix != "",
+		SmartCase: true,
 	})
 }
 
@@ -218,5 +221,33 @@ func WithCacheTiming(warmup, rebuild time.Duration) Option {
 		}
 		c.cacheWarmupDelay = warmup
 		c.cacheRebuildDelay = rebuild
+	}
+}
+
+// WithFiles 按顺序加载多个配置文件，后者覆盖前者。第一个文件同时作为主文件（供 Watch/写回）。
+func WithFiles(paths ...string) Option {
+	return func(c *Config) {
+		if len(paths) == 0 {
+			return
+		}
+		WithPath(paths[0])(c)
+		if len(paths) > 1 {
+			c.overlayFiles = append(c.overlayFiles, paths[1:]...)
+		}
+	}
+}
+
+// WithOverlay 在主配置之上叠加更多文件，后者覆盖前者。
+func WithOverlay(paths ...string) Option {
+	return func(c *Config) {
+		c.overlayFiles = append(c.overlayFiles, paths...)
+	}
+}
+
+// WithSkipInitValidation 跳过 New/Load/热重载时的整份文档校验。
+// Set/SetMultiple 的字段级校验仍然生效。适用于预定义验证器只做写入拦截的场景。
+func WithSkipInitValidation() Option {
+	return func(c *Config) {
+		c.skipInitValidation = true
 	}
 }

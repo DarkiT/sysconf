@@ -10,6 +10,28 @@ import (
 	"github.com/spf13/cast"
 )
 
+func defaultOrZero[T any](def []T) T {
+	if len(def) > 0 {
+		return def[0]
+	}
+	var zero T
+	return zero
+}
+
+func copySlice[T any](src []T) []T {
+	if src == nil {
+		return []T{}
+	}
+	return append([]T(nil), src...)
+}
+
+func firstSliceDefault[T any](def [][]T) []T {
+	if len(def) > 0 {
+		return copySlice(def[0])
+	}
+	return []T{}
+}
+
 // Get 获取配置值
 //
 // 参数:
@@ -19,22 +41,15 @@ import (
 // 返回值:
 //   - 配置值，如果键不存在且提供了默认值则返回默认值
 func (c *Config) Get(key string, def ...any) any {
-	start := time.Now()
-	defer func() {
-		if !metricsEnabled.Load() {
-			return
-		}
-		// 记录性能指标
-		duration := time.Since(start)
-		cacheHit := true // 新架构中总是从原子存储获取，本质上是缓存
-		recordGetOperation(duration, cacheHit)
-	}()
+	// 仅在启用指标时才计时，避免热路径无谓的 time.Now 与 defer 闭包开销。
+	// 新架构中读取始终命中原子存储，故 cacheHit 恒为 true。
+	if metricsEnabled.Load() {
+		start := time.Now()
+		defer func() { recordGetOperation(time.Since(start), true) }()
+	}
 
 	if key == "" {
-		if len(def) > 0 {
-			return def[0]
-		}
-		return nil
+		return defaultOrZero(def)
 	}
 
 	// 使用新的无锁原子读取
@@ -43,7 +58,6 @@ func (c *Config) Get(key string, def ...any) any {
 		return deepCloneValue(val)
 	}
 
-	// 不存在则返回默认值
 	if len(def) > 0 {
 		return def[0]
 	}
@@ -66,10 +80,7 @@ func (c *Config) Get(key string, def ...any) any {
 //   - 布尔类型的配置值，如果键不存在且提供了默认值则返回默认值
 func (c *Config) GetBool(key string, def ...bool) bool {
 	if key == "" {
-		if len(def) > 0 {
-			return def[0]
-		}
-		return false
+		return defaultOrZero(def)
 	}
 
 	if val, exists := c.getRaw(key); exists {
@@ -101,11 +112,7 @@ func (c *Config) GetBool(key string, def ...bool) bool {
 		}
 	}
 
-	if len(def) > 0 {
-		return def[0]
-	}
-
-	return false
+	return defaultOrZero(def)
 }
 
 // GetFloat 获取浮点数配置
@@ -118,10 +125,7 @@ func (c *Config) GetBool(key string, def ...bool) bool {
 //   - 浮点类型的配置值，如果键不存在且提供了默认值则返回默认值
 func (c *Config) GetFloat(key string, def ...float64) float64 {
 	if key == "" {
-		if len(def) > 0 {
-			return def[0]
-		}
-		return 0
+		return defaultOrZero(def)
 	}
 
 	if val, exists := c.getRaw(key); exists {
@@ -141,11 +145,7 @@ func (c *Config) GetFloat(key string, def ...float64) float64 {
 		}
 	}
 
-	if len(def) > 0 {
-		return def[0]
-	}
-
-	return 0.0
+	return defaultOrZero(def)
 }
 
 // GetInt 获取整数配置
@@ -158,10 +158,7 @@ func (c *Config) GetFloat(key string, def ...float64) float64 {
 //   - 整数类型的配置值，如果键不存在且提供了默认值则返回默认值
 func (c *Config) GetInt(key string, def ...int) int {
 	if key == "" {
-		if len(def) > 0 {
-			return def[0]
-		}
-		return 0
+		return defaultOrZero(def)
 	}
 
 	if val, exists := c.getRaw(key); exists {
@@ -181,11 +178,7 @@ func (c *Config) GetInt(key string, def ...int) int {
 		}
 	}
 
-	if len(def) > 0 {
-		return def[0]
-	}
-
-	return 0
+	return defaultOrZero(def)
 }
 
 // GetString 获取字符串配置
@@ -198,10 +191,7 @@ func (c *Config) GetInt(key string, def ...int) int {
 //   - 字符串类型的配置值，如果键不存在且提供了默认值则返回默认值
 func (c *Config) GetString(key string, def ...string) string {
 	if key == "" {
-		if len(def) > 0 {
-			return def[0]
-		}
-		return ""
+		return defaultOrZero(def)
 	}
 
 	if val, exists := c.getRaw(key); exists {
@@ -215,11 +205,7 @@ func (c *Config) GetString(key string, def ...string) string {
 		}
 	}
 
-	if len(def) > 0 {
-		return def[0]
-	}
-
-	return ""
+	return defaultOrZero(def)
 }
 
 // GetStringPath 使用路径片段读取字符串配置（例如: GetStringPath("database", "host")）。
@@ -266,23 +252,19 @@ func joinConfigPath(parts ...string) string {
 //
 // 返回值:
 //   - 字符串切片类型的配置值
-func (c *Config) GetStringSlice(key string) []string {
+func (c *Config) GetStringSlice(key string, def ...[]string) []string {
 	if key == "" {
-		return []string{}
+		return firstSliceDefault(def)
 	}
 
-	// 使用新的原子存储系统
 	val, exists := c.getRaw(key)
 	if !exists {
-		return []string{}
+		return firstSliceDefault(def)
 	}
 
 	result, err := cast.ToStringSliceE(val)
-	if err != nil {
-		return []string{}
-	}
-	if result == nil {
-		return []string{}
+	if err != nil || result == nil {
+		return firstSliceDefault(def)
 	}
 	return append([]string(nil), result...)
 }
@@ -294,18 +276,17 @@ func (c *Config) GetStringSlice(key string) []string {
 //
 // 返回值:
 //   - 布尔值切片类型的配置值
-func (c *Config) GetBoolSlice(key string) []bool {
+func (c *Config) GetBoolSlice(key string, def ...[]bool) []bool {
 	if key == "" {
-		return []bool{}
+		return firstSliceDefault(def)
 	}
 
-	// 使用新的原子存储系统获取原始值
 	val, exists := c.getRaw(key)
 	if !exists {
 		val = nil
 	}
 	if val == nil {
-		return []bool{}
+		return firstSliceDefault(def)
 	}
 
 	switch v := val.(type) {
@@ -332,7 +313,7 @@ func (c *Config) GetBoolSlice(key string) []bool {
 		}
 		return result
 	default:
-		return []bool{}
+		return firstSliceDefault(def)
 	}
 }
 
@@ -343,23 +324,19 @@ func (c *Config) GetBoolSlice(key string) []bool {
 //
 // 返回值:
 //   - 整数切片类型的配置值
-func (c *Config) GetIntSlice(key string) []int {
+func (c *Config) GetIntSlice(key string, def ...[]int) []int {
 	if key == "" {
-		return []int{}
+		return firstSliceDefault(def)
 	}
 
-	// 使用新的原子存储系统
 	val, exists := c.getRaw(key)
 	if !exists {
-		return []int{}
+		return firstSliceDefault(def)
 	}
 
 	result, err := cast.ToIntSliceE(val)
-	if err != nil {
-		return []int{}
-	}
-	if result == nil {
-		return []int{}
+	if err != nil || result == nil {
+		return firstSliceDefault(def)
 	}
 	return append([]int(nil), result...)
 }
@@ -371,12 +348,11 @@ func (c *Config) GetIntSlice(key string) []int {
 //
 // 返回值:
 //   - 浮点数切片类型的配置值
-func (c *Config) GetFloatSlice(key string) []float64 {
+func (c *Config) GetFloatSlice(key string, def ...[]float64) []float64 {
 	if key == "" {
-		return []float64{}
+		return firstSliceDefault(def)
 	}
 
-	// 使用新的原子存储系统获取原始值
 	val, exists := c.getRaw(key)
 	if !exists {
 		val = nil
@@ -384,7 +360,7 @@ func (c *Config) GetFloatSlice(key string) []float64 {
 	c.logger.Debugf("GetFloatSlice[%s] - 原始值: %v (类型: %T)", key, val, val)
 	if val == nil {
 		c.logger.Debugf("GetFloatSlice[%s] - 值为nil，返回空切片", key)
-		return []float64{}
+		return firstSliceDefault(def)
 	}
 
 	// 直接类型判断和转换，避免使用有问题的cast.ToSliceE()
@@ -451,7 +427,7 @@ func (c *Config) GetFloatSlice(key string) []float64 {
 			return []float64{f}
 		}
 		c.logger.Debugf("GetFloatSlice[%s] - 无法转换类型 %T，返回空切片", key, val)
-		return []float64{}
+		return firstSliceDefault(def)
 	}
 }
 
@@ -535,39 +511,38 @@ func cloneStringMapString(src map[string]string) map[string]string {
 //
 // 返回值:
 //   - 时间类型的配置值
-func (c *Config) GetTime(key string) time.Time {
+func (c *Config) GetTime(key string, def ...time.Time) time.Time {
 	if key == "" {
-		return time.Time{}
+		return defaultOrZero(def)
 	}
 
-	// 使用新的原子存储系统
 	if val, exists := c.getRaw(key); exists {
 		if result, err := cast.ToTimeE(val); err == nil {
 			return result
 		}
 	}
-	return time.Time{}
+	return defaultOrZero(def)
 }
 
 // GetDuration 获取时间间隔配置
 //
 // 参数:
 //   - key: 配置键名
+//   - def: 可选默认值
 //
 // 返回值:
-//   - 时间间隔类型的配置值
-func (c *Config) GetDuration(key string) time.Duration {
+//   - 时间间隔类型的配置值，如果键不存在且提供了默认值则返回默认值
+func (c *Config) GetDuration(key string, def ...time.Duration) time.Duration {
 	if key == "" {
-		return 0
+		return defaultOrZero(def)
 	}
 
-	// 使用新的原子存储系统
 	if val, exists := c.getRaw(key); exists {
 		if result, err := cast.ToDurationE(val); err == nil {
 			return result
 		}
 	}
-	return 0
+	return defaultOrZero(def)
 }
 
 // GetWithError 获取配置值并返回错误信息
@@ -579,13 +554,14 @@ func (c *Config) GetDuration(key string) time.Duration {
 //   - 配置值和可能的错误
 func (c *Config) GetWithError(key string) (any, error) {
 	if key == "" {
-		return nil, fmt.Errorf("empty configuration key")
+		return nil, ErrEmptyKey
 	}
 
-	// 使用新的原子存储系统
 	val, exists := c.getRaw(key)
 	if !exists {
-		return nil, fmt.Errorf("configuration key '%s' not found", key)
+		return nil, fmt.Errorf("%w: %q", ErrKeyNotFound, key)
 	}
-	return val, nil
+	// 与 Get 一致做深拷贝：getRaw 可能返回共享的内部 map/slice，直接返回会让调用方
+	// 就地改写污染全局配置，并与并发读构成 data race。
+	return deepCloneValue(val), nil
 }

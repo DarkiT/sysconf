@@ -34,6 +34,10 @@ type OperationStats struct {
 }
 
 // Metrics 配置性能指标
+//
+// 热路径（RecordGet/RecordSet）全部通过原子操作更新，不再持有 mu，
+// 以避免高并发读写场景下的锁争抢。mu 仅保护 OperationTimes/OperationStats
+// 这两个低频写入的 map。最后操作时间以 UnixNano 原子存储，经 GetStats 转回 time.Time。
 type Metrics struct {
 	mu             sync.RWMutex
 	StartTime      time.Time                  `json:"start_time"`
@@ -41,15 +45,23 @@ type Metrics struct {
 	SetCount       int64                      `json:"set_count"`
 	CacheHits      int64                      `json:"cache_hits"`
 	CacheMisses    int64                      `json:"cache_misses"`
-	LastGetTime    time.Time                  `json:"last_get_time"`
-	LastSetTime    time.Time                  `json:"last_set_time"`
 	ErrorCount     int64                      `json:"error_count"`
 	OperationTimes map[string]time.Duration   `json:"operation_times"` // 向后兼容：最后一次操作时间
 	OperationStats map[string]*OperationStats `json:"operation_stats"` // 新增：累积统计
 
-	// 内部计数器
-	totalGetTime int64 // 累积的Get操作时间（纳秒）
-	totalSetTime int64 // 累积的Set操作时间（纳秒）
+	// 内部计数器（全部原子访问，热路径无锁）
+	totalGetTime int64        // 累积的 Get 操作时间（纳秒）
+	totalSetTime int64        // 累积的 Set 操作时间（纳秒）
+	lastGetNs    atomic.Int64 // 最后一次 Get 的 UnixNano，0 表示尚未发生
+	lastSetNs    atomic.Int64 // 最后一次 Set 的 UnixNano，0 表示尚未发生
+}
+
+// unixNanoToTime 将 UnixNano 计数转换为 time.Time，0 表示零值时间。
+func unixNanoToTime(ns int64) time.Time {
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
 }
 
 // NewMetrics 创建新的性能指标实例
@@ -61,7 +73,7 @@ func NewMetrics() *Metrics {
 	}
 }
 
-// RecordGet 记录Get操作
+// RecordGet 记录Get操作（全程原子，无锁）
 func (m *Metrics) RecordGet(duration time.Duration, cacheHit bool) {
 	atomic.AddInt64(&m.GetCount, 1)
 	atomic.AddInt64(&m.totalGetTime, int64(duration))
@@ -72,19 +84,15 @@ func (m *Metrics) RecordGet(duration time.Duration, cacheHit bool) {
 		atomic.AddInt64(&m.CacheMisses, 1)
 	}
 
-	m.mu.Lock()
-	m.LastGetTime = time.Now()
-	m.mu.Unlock()
+	m.lastGetNs.Store(time.Now().UnixNano())
 }
 
-// RecordSet 记录Set操作
+// RecordSet 记录Set操作（全程原子，无锁）
 func (m *Metrics) RecordSet(duration time.Duration) {
 	atomic.AddInt64(&m.SetCount, 1)
 	atomic.AddInt64(&m.totalSetTime, int64(duration))
 
-	m.mu.Lock()
-	m.LastSetTime = time.Now()
-	m.mu.Unlock()
+	m.lastSetNs.Store(time.Now().UnixNano())
 }
 
 // RecordError 记录错误
@@ -140,8 +148,8 @@ func (m *Metrics) GetStats() MetricsSnapshot {
 		CacheHits:      atomic.LoadInt64(&m.CacheHits),
 		CacheMisses:    atomic.LoadInt64(&m.CacheMisses),
 		ErrorCount:     atomic.LoadInt64(&m.ErrorCount),
-		LastGetTime:    m.LastGetTime,
-		LastSetTime:    m.LastSetTime,
+		LastGetTime:    unixNanoToTime(m.lastGetNs.Load()),
+		LastSetTime:    unixNanoToTime(m.lastSetNs.Load()),
 		OperationTimes: make(map[string]time.Duration),
 		OperationStats: make(map[string]*OperationStats),
 	}
@@ -189,10 +197,10 @@ func (m *Metrics) Reset() {
 	atomic.StoreInt64(&m.ErrorCount, 0)
 	atomic.StoreInt64(&m.totalGetTime, 0)
 	atomic.StoreInt64(&m.totalSetTime, 0)
+	m.lastGetNs.Store(0)
+	m.lastSetNs.Store(0)
 
 	m.StartTime = time.Now()
-	m.LastGetTime = time.Time{}
-	m.LastSetTime = time.Time{}
 	m.OperationTimes = make(map[string]time.Duration)
 	m.OperationStats = make(map[string]*OperationStats)
 }

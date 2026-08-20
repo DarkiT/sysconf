@@ -1,6 +1,7 @@
 package sysconf
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -17,10 +18,10 @@ func (c *Config) Set(key string, value any) error {
 		return ErrAlreadyClosed
 	}
 
-	start := time.Now()
-	defer func() {
-		recordSetOperation(time.Since(start))
-	}()
+	if metricsEnabled.Load() {
+		start := time.Now()
+		defer func() { recordSetOperation(time.Since(start)) }()
+	}
 
 	if key == "" {
 		c.logger.Errorf("Attempted to set config with empty key")
@@ -41,6 +42,7 @@ func (c *Config) Set(key string, value any) error {
 	if c.name != "" {
 		snap = &snapshot{
 			data:      deepCloneMap(currentData),
+			overrides: deepCloneMap(c.loadOverrides()),
 			readCache: deepCloneMap(c.loadReadCache()),
 			timestamp: time.Now(),
 		}
@@ -72,9 +74,14 @@ func (c *Config) Set(key string, value any) error {
 		return err
 	}
 
-	// 验证通过后再原子提交数据与 viper
+	// 验证通过后再原子提交数据、覆盖层与 viper。
+	// pendingWrites 必须在同一把锁内标记，避免 Close 在 scheduleWrite 之前快照到“无待写”。
 	c.storeData(newData)
+	c.commitOverrideLocked(key, value)
 	c.viper.Set(key, value)
+	if c.name != "" {
+		c.pendingWrites = true
+	}
 	c.mu.Unlock()
 
 	c.invalidateCache()
@@ -87,6 +94,9 @@ func (c *Config) Set(key string, value any) error {
 
 	// 根据写入延迟策略触发写盘
 	if err := c.scheduleWrite(); err != nil {
+		if errors.Is(err, ErrAlreadyClosed) {
+			return nil
+		}
 		if snap != nil {
 			c.restoreSnapshot(snap)
 		}
@@ -108,6 +118,13 @@ func (c *Config) flushPendingWritesWithPending(markPending bool) error {
 		c.pendingWrites = true
 	}
 
+	if c.closed.Load() {
+		c.writeMu.Unlock()
+		c.mu.Unlock()
+		c.cacheBuildMu.Unlock()
+		return nil
+	}
+
 	if !c.pendingWrites {
 		c.logger.Debugf("No pending changes, skipping write operation")
 		c.writeMu.Unlock()
@@ -119,7 +136,7 @@ func (c *Config) flushPendingWritesWithPending(markPending bool) error {
 	c.logger.Infof("Writing config file")
 
 	// 在持锁后获取配置快照，确保一致性
-	settingsSnapshot := c.snapshotAllSettings()
+	settingsSnapshot := c.snapshotPersistentSettings()
 	// 标记已消费当前待写入状态，允许新的写入在锁外排队
 	c.pendingWrites = false
 
@@ -129,10 +146,14 @@ func (c *Config) flushPendingWritesWithPending(markPending bool) error {
 
 	if err := c.writeConfigFileWithData(settingsSnapshot); err != nil {
 		c.logger.Errorf("Failed to write config file: %v", err)
+		c.mu.Lock()
+		c.pendingWrites = true
+		c.mu.Unlock()
+		c.recordWriteErr(err)
 		c.writeMu.Unlock()
 		return err
 	}
-	// 写入完成后再释放写入锁，保证写入顺序
+	c.lastWriteErr.Store(nil)
 	c.writeMu.Unlock()
 	c.logger.Infof("Config file written successfully")
 	return nil
@@ -151,10 +172,16 @@ func (c *Config) scheduleDebouncedWrite() error {
 	// 标记待写入并重置定时器
 	c.cacheBuildMu.Lock()
 	c.mu.Lock()
+	if c.closed.Load() {
+		c.mu.Unlock()
+		c.cacheBuildMu.Unlock()
+		return ErrAlreadyClosed
+	}
 	c.pendingWrites = true
 	if c.writeTimer == nil {
 		c.writeTimer = time.AfterFunc(c.writeDelay, func() {
 			if err := c.flushPendingWritesWithPending(false); err != nil {
+				c.recordWriteErr(err)
 				c.logger.Errorf("Failed to flush pending writes: %v", err)
 			}
 		})
@@ -164,6 +191,34 @@ func (c *Config) scheduleDebouncedWrite() error {
 	}
 	c.mu.Unlock()
 	c.cacheBuildMu.Unlock()
+	return nil
+}
+
+// Flush 立即把待写入配置落到磁盘，并返回此前防抖写入留下的错误。
+func (c *Config) Flush() error {
+	if c.closed.Load() {
+		return ErrAlreadyClosed
+	}
+	flushErr := c.flushPendingWritesWithPending(false)
+	if flushErr != nil {
+		return errors.Join(flushErr, c.consumeWriteErr())
+	}
+	_ = c.consumeWriteErr()
+	return nil
+}
+
+func (c *Config) recordWriteErr(err error) {
+	if err == nil {
+		return
+	}
+	copied := err
+	c.lastWriteErr.Store(&copied)
+}
+
+func (c *Config) consumeWriteErr() error {
+	if p := c.lastWriteErr.Swap(nil); p != nil {
+		return *p
+	}
 	return nil
 }
 
@@ -299,10 +354,10 @@ func (c *Config) SetMultiple(values map[string]any) error {
 		return nil
 	}
 
-	start := time.Now()
-	defer func() {
-		recordSetOperation(time.Since(start))
-	}()
+	if metricsEnabled.Load() {
+		start := time.Now()
+		defer func() { recordSetOperation(time.Since(start)) }()
+	}
 
 	// 验证所有键
 	for key := range values {
@@ -325,6 +380,7 @@ func (c *Config) SetMultiple(values map[string]any) error {
 	if c.name != "" {
 		snap = &snapshot{
 			data:      deepCloneMap(currentData),
+			overrides: deepCloneMap(c.loadOverrides()),
 			readCache: deepCloneMap(c.loadReadCache()),
 			timestamp: time.Now(),
 		}
@@ -379,10 +435,14 @@ func (c *Config) SetMultiple(values map[string]any) error {
 		}
 	}
 
-	// 验证通过后原子提交
+	// 验证通过后原子提交。pendingWrites 与提交同锁，避免 Close 漏持久化。
 	c.storeData(newData)
 	for key, value := range values {
+		c.commitOverrideLocked(key, value)
 		c.viper.Set(key, value)
+	}
+	if c.name != "" {
+		c.pendingWrites = true
 	}
 	c.mu.Unlock()
 
@@ -396,6 +456,9 @@ func (c *Config) SetMultiple(values map[string]any) error {
 
 	// 根据写入延迟策略触发写盘
 	if err := c.scheduleWrite(); err != nil {
+		if errors.Is(err, ErrAlreadyClosed) {
+			return nil
+		}
 		if snap != nil {
 			c.restoreSnapshot(snap)
 		}

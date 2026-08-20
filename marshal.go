@@ -2,7 +2,6 @@ package sysconf
 
 import (
 	"fmt"
-	"reflect"
 	"strings"
 
 	mapstructure "github.com/go-viper/mapstructure/v2"
@@ -29,57 +28,31 @@ func (c *Config) Marshal(value any, prefix ...string) error {
 		return fmt.Errorf("failed to convert struct to map: %v", err)
 	}
 
-	c.mu.RLock()
-	configMap = deepMerge(c.snapshotAllSettings(), configMap)
-	c.mu.RUnlock()
-
+	root := ""
 	if len(prefix) > 0 {
-		return c.setMapToViper(strings.Join(prefix, "."), configMap)
+		root = strings.Join(prefix, ".")
 	}
-	return c.setMapToViper("", configMap)
+	// 拍平为点分隔键后一次性批量提交:单次深拷贝+单次校验+单次写盘,失败可回滚
+	flat := make(map[string]any, len(configMap))
+	flattenForSet(root, configMap, flat)
+
+	return c.SetMultiple(flat)
 }
 
-// setMapToViper 递归设置map到viper中
-//
-// 参数:
-//   - prefix: 配置键前缀
-//   - m: 要设置的映射数据
-func (c *Config) setMapToViper(prefix string, m map[string]any) error {
+// flattenForSet 将嵌套 map 拍平为点分隔键写入 out。
+// 语义与原逐层写入一致:嵌套 map 递归展开到叶子;空 map 不产生键;nil 及非 map[string]any 值作为叶子写入。
+func flattenForSet(prefix string, m, out map[string]any) {
 	for key, val := range m {
 		k := key
 		if prefix != "" {
 			k = prefix + "." + key
 		}
-
-		// 先检查值是否为 nil
-		if val == nil {
-			if err := c.Set(k, nil); err != nil {
-				return err
-			}
-			continue
-		}
-
-		valType := reflect.TypeOf(val)
-		if valType != nil && valType.Kind() == reflect.Map {
-			// 如果值是map，递归处理
-			if mapVal, ok := val.(map[string]any); ok {
-				if err := c.setMapToViper(k, mapVal); err != nil {
-					return err
-				}
-			} else {
-				// 类型断言失败，直接设置值
-				if err := c.Set(k, val); err != nil {
-					return err
-				}
-			}
+		if sub, ok := val.(map[string]any); ok {
+			flattenForSet(k, sub, out)
 		} else {
-			// 直接设置值
-			if err := c.Set(k, val); err != nil {
-				return err
-			}
+			out[k] = val
 		}
 	}
-	return nil
 }
 
 // deepMerge 深度合并两个 map（原地修改 m1）

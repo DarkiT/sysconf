@@ -1,6 +1,7 @@
 package sysconf
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -25,15 +26,21 @@ import (
 )
 
 var (
-	workPathOnce  sync.Once
-	workPathValue string
-	globalOnce    sync.Once
-	globalConfig  *Config
-	globalErr     error
+	workPathOnce      sync.Once
+	workPathValue     string
+	globalOnce        sync.Once
+	globalConfig      *Config
+	globalErr         error
+	globalInitialized atomic.Bool
 
 	ErrInvalidKey       = errors.New("invalid configuration key")
 	ErrInitGlobalConfig = errors.New("failed to initialize global config")
 	ErrAlreadyClosed    = errors.New("config already closed")
+	ErrKeyNotFound      = errors.New("configuration key not found")
+	ErrConversion       = errors.New("configuration type conversion failed")
+	ErrEmptyKey         = errors.New("empty configuration key")
+	ErrNilConfig        = errors.New("config cannot be nil")
+	ErrValidation       = errors.New("configuration validation failed")
 )
 
 const (
@@ -76,7 +83,8 @@ func (f ConfigValidateFunc) GetName() string {
 // Config 统一配置实现
 type Config struct {
 	// 核心数据存储 - 使用atomic.Value实现无锁读取
-	data atomic.Value // 存储map[string]any
+	data      atomic.Value // 文件快照 map[string]any
+	overrides atomic.Value // 显式 Set 层，热重载后仍保留
 
 	// 并发控制
 	mu sync.RWMutex // 保护元数据和写操作
@@ -92,28 +100,38 @@ type Config struct {
 	mode   string // 配置文件类型
 	name   string // 配置文件名称
 	// configFileName 保存需要按精确文件名读取的隐藏配置文件，例如 .env。
-	configFileName string
-	content        string // 默认配置文件内容
+	configFileName     string
+	content            string   // 默认配置文件内容
+	overlayFiles       []string // WithFiles/WithOverlay 叠加文件，后者覆盖前者
+	skipInitValidation bool
 
 	// 功能组件
-	envOptions    EnvOptions        // 环境变量配置选项
-	envEnabled    atomic.Bool       // 环境变量热路径开关
-	envKeyCache   sync.Map          // 环境变量键派生缓存
-	cryptoOptions CryptoOptions     // 加密配置选项
-	crypto        ConfigCrypto      // 加密实现实例
-	validators    []ConfigValidator // 配置验证器列表
-	pflags        []*pflag.FlagSet  // 命令行标志绑定
-	pflagOptions  PFlagOptions      // 命令行标志绑定选项
+	envOptions    EnvOptions                 // 环境变量配置选项（写入受 mu 保护）
+	envEnabled    atomic.Bool                // 环境变量热路径开关
+	envSnapshot   atomic.Pointer[EnvOptions] // envOptions 的无锁只读快照，供读路径免锁访问
+	envKeyCache   sync.Map                   // 环境变量键派生缓存
+	envAliases    atomic.Value               // map[string][]string，SmartCase 扫描到的真实 env 名
+	flagEnabled   atomic.Bool                // 是否存在可覆盖的命令行 flag
+	flagSnapshot  atomic.Value               // map[string]any，兼容旧快照；取值走 collectFlags
+	cryptoOptions CryptoOptions              // 加密配置选项
+	crypto        ConfigCrypto               // 加密实现实例
+	validators    []ConfigValidator          // 配置验证器列表
+	pflags        []*pflag.FlagSet           // 命令行标志绑定
+	pflagOptions  PFlagOptions               // 命令行标志绑定选项
 
 	// 文件监控和写入控制
 	lastUpdate      time.Time   // 配置最后更新时间
 	writeTimer      *time.Timer // 延迟写入定时器
-	pendingWrites   bool        // 是否有待写入的更改
+	watchTimer      *time.Timer // 热重载尾沿防抖
+	overlayWatcher  *fsnotify.Watcher
+	pendingWrites   bool // 是否有待写入的更改
 	writeDelay      time.Duration
 	watchDebounce   time.Duration
 	watchStarted    bool
 	watchCallbacks  map[uint64]func()
+	changeHandlers  map[uint64]ChangeHandler
 	nextWatchHandle uint64
+	lastWriteErr    atomic.Pointer[error]
 
 	// viper兼容层（用于文件操作和环境变量）
 	viper       *viper.Viper
@@ -137,6 +155,7 @@ type Config struct {
 // 快照结构，用于在写入失败时回滚
 type snapshot struct {
 	data      map[string]any
+	overrides map[string]any
 	readCache map[string]any
 	timestamp time.Time
 }
@@ -163,6 +182,7 @@ func New(opts ...Option) (*Config, error) {
 		cacheRebuildDelay: defaultCacheRebuildDelay,
 		stopChan:          make(chan struct{}),
 		watchCallbacks:    make(map[uint64]func()),
+		changeHandlers:    make(map[uint64]ChangeHandler),
 	}
 
 	// 默认启用缓存
@@ -170,6 +190,9 @@ func New(opts ...Option) (*Config, error) {
 
 	// 初始化原子数据存储
 	c.data.Store(make(map[string]any))
+	c.overrides.Store(make(map[string]any))
+	c.flagSnapshot.Store(make(map[string]any))
+	c.envAliases.Store(map[string][]string{})
 
 	// 应用自定义选项
 	for _, opt := range opts {
@@ -188,13 +211,19 @@ func New(opts ...Option) (*Config, error) {
 	return c, nil
 }
 
-// Default 获取全局单例配置实例
+// Default 获取全局单例配置实例。
+// 首次调用会应用 opts；之后再次传入的选项会被忽略并记录警告。
 func Default(opts ...Option) (*Config, error) {
+	already := globalInitialized.Load()
 	globalOnce.Do(func() {
 		globalConfig, globalErr = New(opts...)
+		globalInitialized.Store(true)
 	})
 	if globalErr != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInitGlobalConfig, globalErr)
+	}
+	if already && len(opts) > 0 && globalConfig != nil && globalConfig.logger != nil {
+		globalConfig.logger.Warnf("Default() options ignored: global config already initialized")
 	}
 	return globalConfig, nil
 }
@@ -202,6 +231,15 @@ func Default(opts ...Option) (*Config, error) {
 // MustDefault 获取全局单例配置实例，初始化失败时 panic。
 func MustDefault(opts ...Option) *Config {
 	cfg, err := Default(opts...)
+	if err != nil {
+		panic(err)
+	}
+	return cfg
+}
+
+// MustNew 创建配置实例，初始化失败时 panic。适用于 main / 测试中的必达路径。
+func MustNew(opts ...Option) *Config {
+	cfg, err := New(opts...)
 	if err != nil {
 		panic(err)
 	}
@@ -223,36 +261,68 @@ func Register(module, key string, value any) error {
 	return cfg.Set(module+"."+key, value)
 }
 
-// Watch 监听配置变化
-func (c *Config) Watch(callbacks ...func()) {
-	c.WatchWithContext(context.Background(), callbacks...)
+// Watch 监听配置变化。实例已关闭时返回 ErrAlreadyClosed。
+func (c *Config) Watch(callbacks ...func()) error {
+	_, err := c.beginWatch(context.Background(), callbacks, nil)
+	return err
 }
 
 // WatchWithContext 监听配置变化并返回取消函数，用于显式停止监听。
 func (c *Config) WatchWithContext(ctx context.Context, callbacks ...func()) context.CancelFunc {
+	cancel, err := c.beginWatch(ctx, callbacks, nil)
+	if err != nil {
+		c.logger.Errorf("Failed to start config watch: %v", err)
+	}
+	return cancel
+}
+
+// OnChange 监听配置变化并接收 prev/next 快照。校验失败时 err != nil 且内存配置不切换。
+func (c *Config) OnChange(handlers ...ChangeHandler) error {
+	_, err := c.beginWatch(context.Background(), nil, handlers)
+	return err
+}
+
+// OnChangeWithContext 同 OnChange，并返回取消函数。
+func (c *Config) OnChangeWithContext(ctx context.Context, handlers ...ChangeHandler) context.CancelFunc {
+	cancel, err := c.beginWatch(ctx, nil, handlers)
+	if err != nil {
+		c.logger.Errorf("Failed to start config watch: %v", err)
+	}
+	return cancel
+}
+
+func (c *Config) beginWatch(ctx context.Context, callbacks []func(), handlers []ChangeHandler) (context.CancelFunc, error) {
+	noop := func() {}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-
 	if c.closed.Load() {
-		return func() {}
+		return noop, ErrAlreadyClosed
 	}
 
 	watchCtx, cancel := context.WithCancel(ctx)
 
 	c.mu.Lock()
+	if c.closed.Load() {
+		c.mu.Unlock()
+		cancel()
+		return noop, ErrAlreadyClosed
+	}
 	if c.stopChan == nil {
 		c.stopChan = make(chan struct{})
 	}
-	handles := c.registerWatchCallbacksLocked(callbacks...)
+	simpleHandles := c.registerWatchCallbacksLocked(callbacks...)
+	changeHandles := c.registerChangeHandlersLocked(handlers...)
 	if err := c.startWatchLocked(); err != nil {
-		for _, handle := range handles {
+		for _, handle := range simpleHandles {
 			delete(c.watchCallbacks, handle)
+		}
+		for _, handle := range changeHandles {
+			delete(c.changeHandlers, handle)
 		}
 		c.mu.Unlock()
 		cancel()
-		c.logger.Errorf("Failed to start config watch: %v", err)
-		return func() {}
+		return noop, err
 	}
 	c.mu.Unlock()
 
@@ -261,10 +331,11 @@ func (c *Config) WatchWithContext(ctx context.Context, callbacks ...func()) cont
 		case <-watchCtx.Done():
 		case <-c.stopChan:
 		}
-		c.unregisterWatchCallbacks(handles...)
+		c.unregisterWatchCallbacks(simpleHandles...)
+		c.unregisterChangeHandlers(changeHandles...)
 	})
 
-	return cancel
+	return cancel, nil
 }
 
 // reloadConfigLocked 在检测到文件变更时重新加载配置文件
@@ -288,7 +359,43 @@ func (c *Config) Viper() *viper.Viper {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.ensureViperLoadedLocked()
+	c.bindLiveFlagsLocked()
 	return c.viper
+}
+
+func (c *Config) bindLiveFlagsLocked() {
+	if c.viper == nil {
+		return
+	}
+	for _, flagSet := range c.pflags {
+		if flagSet == nil {
+			continue
+		}
+		flagSet.VisitAll(func(f *pflag.Flag) {
+			if f == nil {
+				return
+			}
+			if c.pflagOptions.OnlyChanged && !f.Changed {
+				return
+			}
+			if c.pflagOptions.Validate != nil {
+				if err := c.pflagOptions.Validate(f); err != nil {
+					c.logger.Errorf("Invalid flag %s: %v", f.Name, err)
+					return
+				}
+			}
+			key := f.Name
+			if c.pflagOptions.KeyMapper != nil {
+				key = c.pflagOptions.KeyMapper(f)
+			}
+			if key == "" {
+				return
+			}
+			if err := c.viper.BindPFlag(key, f); err != nil {
+				c.logger.Errorf("Failed to bind flag %s: %v", f.Name, err)
+			}
+		})
+	}
 }
 
 // AddValidator 添加配置验证器
@@ -529,11 +636,17 @@ func (c *Config) initialize() error {
 
 	c.pendingWrites = false
 	c.envKeyCache = sync.Map{}
+	c.envAliases.Store(map[string][]string{})
 	c.watchCallbacks = make(map[uint64]func())
+	c.changeHandlers = make(map[uint64]ChangeHandler)
 	c.nextWatchHandle = 0
 	c.watchStarted = false
 	if c.writeTimer != nil {
 		c.writeTimer.Stop()
+	}
+	if c.watchTimer != nil {
+		c.watchTimer.Stop()
+		c.watchTimer = nil
 	}
 
 	// 确保有一个日志记录器
@@ -604,8 +717,25 @@ func (c *Config) initialize() error {
 	}
 
 	if c.viperLoaded {
-		// 同步viper数据到原子存储（已在锁内，直接调用内部方法）
-		c.syncFromViperUnsafe()
+		if err := c.syncFromViperUnsafe(); err != nil {
+			return c.wrapError(err, "同步配置文件")
+		}
+	}
+
+	c.snapshotFlagsLocked()
+
+	if err := c.applyOverlayFilesUnsafe(); err != nil {
+		return c.wrapError(err, "叠加配置文件")
+	}
+
+	if c.viperLoaded {
+		if err := c.syncFromViperUnsafe(); err != nil {
+			return c.wrapError(err, "同步叠加配置")
+		}
+	}
+
+	if err := c.validateOnInit(); err != nil {
+		return err
 	}
 
 	// 启用读取缓存以优化并发访问性能（保持兼容性）
@@ -614,28 +744,53 @@ func (c *Config) initialize() error {
 	return nil
 }
 
-// Close 停止所有后台资源，确保幂等与超时保护
+// Close 停止所有后台资源，确保幂等与超时保护。
+// 先在锁内标记关闭以拒绝并发 Set，再落盘；落盘失败则恢复未关闭以便重试。
 func (c *Config) Close() error {
-	if !c.closed.CompareAndSwap(false, true) {
+	c.mu.Lock()
+	if c.closed.Load() {
+		c.mu.Unlock()
 		return ErrAlreadyClosed
 	}
-
-	var (
-		flushErr       error
-		needsFlush     bool
-		settingsToSave map[string]any
-	)
-
-	c.mu.Lock()
 	if c.writeTimer != nil {
 		c.writeTimer.Stop()
 		c.writeTimer = nil
 	}
-	needsFlush = c.pendingWrites
+	needsFlush := c.pendingWrites
+	var settingsToSave map[string]any
 	if needsFlush && c.name != "" {
-		settingsToSave = c.snapshotAllSettings()
+		settingsToSave = c.snapshotPersistentSettings()
 	}
-	c.pendingWrites = false
+	c.closed.Store(true)
+	c.mu.Unlock()
+
+	if needsFlush && c.name != "" {
+		c.writeMu.Lock()
+		err := c.writeConfigFileWithData(settingsToSave)
+		c.writeMu.Unlock()
+		if err != nil {
+			c.mu.Lock()
+			c.pendingWrites = true
+			c.closed.Store(false)
+			c.mu.Unlock()
+			c.recordWriteErr(err)
+			return errors.Join(fmt.Errorf("flush pending writes on close: %w", err), c.consumeWriteErr())
+		}
+		c.lastWriteErr.Store(nil)
+		c.mu.Lock()
+		c.pendingWrites = false
+		c.mu.Unlock()
+	}
+
+	c.mu.Lock()
+	if c.watchTimer != nil {
+		c.watchTimer.Stop()
+		c.watchTimer = nil
+	}
+	if c.overlayWatcher != nil {
+		_ = c.overlayWatcher.Close()
+		c.overlayWatcher = nil
+	}
 	c.mu.Unlock()
 
 	c.cacheMu.Lock()
@@ -645,18 +800,8 @@ func (c *Config) Close() error {
 	}
 	c.cacheMu.Unlock()
 
-	// 关闭停止通道，通知所有监听者退出
 	if c.stopChan != nil {
 		close(c.stopChan)
-	}
-
-	// 在关闭前同步落盘，避免 debounce 写入在 Close 时丢失。
-	if needsFlush && c.name != "" {
-		c.writeMu.Lock()
-		if err := c.writeConfigFileWithData(settingsToSave); err != nil {
-			flushErr = fmt.Errorf("flush pending writes on close: %w", err)
-		}
-		c.writeMu.Unlock()
 	}
 
 	done := make(chan struct{})
@@ -667,16 +812,19 @@ func (c *Config) Close() error {
 
 	select {
 	case <-done:
-		return flushErr
+		return c.consumeWriteErr()
 	case <-time.After(5 * time.Second):
-		if flushErr != nil {
-			return fmt.Errorf("timeout waiting for goroutines to exit (%v)", flushErr)
+		if err := c.consumeWriteErr(); err != nil {
+			return fmt.Errorf("timeout waiting for goroutines to exit (%v)", err)
 		}
 		return fmt.Errorf("timeout waiting for goroutines to exit")
 	}
 }
 
 func (c *Config) registerWatchCallbacksLocked(callbacks ...func()) []uint64 {
+	if c.watchCallbacks == nil {
+		c.watchCallbacks = make(map[uint64]func())
+	}
 	handles := make([]uint64, 0, len(callbacks))
 	for _, cb := range callbacks {
 		if cb == nil {
@@ -688,6 +836,34 @@ func (c *Config) registerWatchCallbacksLocked(callbacks ...func()) []uint64 {
 		handles = append(handles, handle)
 	}
 	return handles
+}
+
+func (c *Config) registerChangeHandlersLocked(handlers ...ChangeHandler) []uint64 {
+	if c.changeHandlers == nil {
+		c.changeHandlers = make(map[uint64]ChangeHandler)
+	}
+	handles := make([]uint64, 0, len(handlers))
+	for _, cb := range handlers {
+		if cb == nil {
+			continue
+		}
+		c.nextWatchHandle++
+		handle := c.nextWatchHandle
+		c.changeHandlers[handle] = cb
+		handles = append(handles, handle)
+	}
+	return handles
+}
+
+func (c *Config) unregisterChangeHandlers(handles ...uint64) {
+	if len(handles) == 0 {
+		return
+	}
+	c.mu.Lock()
+	for _, handle := range handles {
+		delete(c.changeHandlers, handle)
+	}
+	c.mu.Unlock()
 }
 
 func (c *Config) unregisterWatchCallbacks(handles ...uint64) {
@@ -711,13 +887,86 @@ func (c *Config) startWatchLocked() error {
 		c.handleConfigChange(e)
 	})
 	c.viper.WatchConfig()
+	if err := c.startOverlayWatchLocked(); err != nil {
+		return err
+	}
 	c.watchStarted = true
 	c.logger.Infof("Config file watching started")
 	return nil
 }
 
+func (c *Config) startOverlayWatchLocked() error {
+	if len(c.overlayFiles) == 0 {
+		return nil
+	}
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return err
+	}
+	seen := make(map[string]struct{})
+	for _, overlay := range c.overlayFiles {
+		if overlay == "" {
+			continue
+		}
+		dir := filepath.Dir(overlay)
+		if _, ok := seen[dir]; ok {
+			continue
+		}
+		if err := watcher.Add(dir); err != nil {
+			_ = watcher.Close()
+			return fmt.Errorf("watch overlay %s: %w", overlay, err)
+		}
+		seen[dir] = struct{}{}
+	}
+	c.overlayWatcher = watcher
+	c.wg.Go(func() {
+		c.overlayWatchLoop(watcher)
+	})
+	return nil
+}
+
+func (c *Config) overlayWatchLoop(watcher *fsnotify.Watcher) {
+	for {
+		select {
+		case <-c.stopChan:
+			return
+		case ev, ok := <-watcher.Events:
+			if !ok {
+				return
+			}
+			if c.isOverlayEvent(ev.Name) {
+				c.handleConfigChange(ev)
+			}
+		case _, ok := <-watcher.Errors:
+			if !ok {
+				return
+			}
+		}
+	}
+}
+
+func (c *Config) isOverlayEvent(name string) bool {
+	abs, err := filepath.Abs(name)
+	if err != nil {
+		abs = name
+	}
+	for _, overlay := range c.overlayFiles {
+		if overlay == "" {
+			continue
+		}
+		target, err := filepath.Abs(overlay)
+		if err != nil {
+			target = overlay
+		}
+		if abs == target {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Config) handleConfigChange(e fsnotify.Event) {
-	if e.Op&fsnotify.Write == 0 {
+	if e.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename) == 0 {
 		return
 	}
 
@@ -728,19 +977,76 @@ func (c *Config) handleConfigChange(e fsnotify.Event) {
 	}
 
 	c.mu.Lock()
-	now := time.Now()
-	if now.Sub(c.lastUpdate) < c.watchDebounce {
+	if c.closed.Load() {
 		c.mu.Unlock()
 		return
 	}
-	c.lastUpdate = now
+	if c.watchDebounce <= 0 {
+		c.mu.Unlock()
+		c.applyWatchedReload(e)
+		return
+	}
+	if c.watchTimer == nil {
+		c.watchTimer = time.AfterFunc(c.watchDebounce, func() {
+			c.applyWatchedReload(e)
+		})
+	} else {
+		c.watchTimer.Reset(c.watchDebounce)
+	}
+	c.mu.Unlock()
+}
+
+func (c *Config) applyWatchedReload(e fsnotify.Event) {
+	select {
+	case <-c.stopChan:
+		return
+	default:
+	}
+	if c.closed.Load() {
+		return
+	}
+
+	c.mu.Lock()
+	now := time.Now()
+	prevData := deepCloneMap(c.loadData())
+	prevEffective := c.snapshotAllSettings()
 
 	if err := c.reloadConfigLocked(); err != nil {
 		c.logger.Errorf("Failed to reload config after change: %v", err)
 		c.mu.Unlock()
+		c.notifyChange(prevEffective, nil, err)
 		return
 	}
-	c.syncFromViperUnsafe()
+	if err := c.applyOverlayFilesUnsafe(); err != nil {
+		c.restoreFileLayer(prevData)
+		c.logger.Errorf("Failed to apply overlay files after change: %v", err)
+		c.mu.Unlock()
+		c.notifyChange(prevEffective, nil, err)
+		return
+	}
+	if err := c.syncFromViperUnsafe(); err != nil {
+		c.restoreFileLayer(prevData)
+		c.logger.Errorf("Failed to sync file layer after change: %v", err)
+		c.mu.Unlock()
+		c.notifyChange(prevEffective, nil, err)
+		return
+	}
+	nextEffective := c.snapshotAllSettings()
+	if err := c.validateOnInit(); err != nil {
+		c.restoreFileLayer(prevData)
+		c.logger.Errorf("Reload validation failed, keeping previous config: %v", err)
+		c.mu.Unlock()
+		c.notifyChange(prevEffective, nextEffective, err)
+		return
+	}
+	if err := c.hydrateViperFromPersistentUnsafe(); err != nil {
+		c.restoreFileLayer(prevData)
+		c.logger.Errorf("Failed to sync viper after reload: %v", err)
+		c.mu.Unlock()
+		c.notifyChange(prevEffective, nextEffective, err)
+		return
+	}
+	c.lastUpdate = now
 
 	callbacks := make([]func(), 0, len(c.watchCallbacks))
 	for _, cb := range c.watchCallbacks {
@@ -750,6 +1056,7 @@ func (c *Config) handleConfigChange(e fsnotify.Event) {
 
 	c.invalidateCache()
 	c.logger.Infof("Config file change detected: %s", e.Name)
+	c.notifyChange(prevEffective, nextEffective, nil)
 
 	for _, cb := range callbacks {
 		cb()
@@ -757,12 +1064,35 @@ func (c *Config) handleConfigChange(e fsnotify.Event) {
 	c.logger.Debugf("Executed %d config change callbacks", len(callbacks))
 }
 
+func (c *Config) notifyChange(prev, next map[string]any, err error) {
+	c.mu.RLock()
+	handlers := make([]ChangeHandler, 0, len(c.changeHandlers))
+	for _, h := range c.changeHandlers {
+		handlers = append(handlers, h)
+	}
+	c.mu.RUnlock()
+	for _, h := range handlers {
+		h(prev, next, err)
+	}
+}
+
 func (c *Config) initializeEnv() error {
+	// 无论是否启用，都发布一份 envOptions 只读快照，
+	// 供 lookupEnvValue 在读路径上免锁访问（写入端始终持有 mu）。
+	defer func() {
+		snapshot := c.envOptions
+		c.envSnapshot.Store(&snapshot)
+	}()
+
 	if !c.envOptions.Enabled {
 		c.envEnabled.Store(false)
 		return nil
 	}
 	c.envEnabled.Store(true)
+
+	if c.envOptions.Prefix == "" {
+		c.logger.Warnf("env override enabled without prefix; system variables (PATH/HOME/USER) can silently override config keys. Prefer WithEnv(\"YOURAPP\")")
+	}
 
 	// 设置环境变量前缀（自动转大写）
 	if c.envOptions.Prefix != "" {
@@ -857,13 +1187,16 @@ func (c *Config) bindSmartCaseEnvVars() {
 	}
 
 	// 第二阶段：批量绑定环境变量
+	aliases := make(map[string][]string)
 	for _, pair := range matchingVars {
 		if err := c.viper.BindEnv(pair.configKey, pair.key); err != nil {
 			c.logger.Warnf("Failed to bind env var %s -> %s: %v", pair.key, pair.configKey, err)
 			continue
 		}
+		aliases[pair.configKey] = append(aliases[pair.configKey], pair.key)
 		c.logger.Debugf("Bound env var: %s -> %s", pair.key, pair.configKey)
 	}
+	c.envAliases.Store(aliases)
 
 	duration := time.Since(startTime)
 	c.logger.Infof("Smart case env binding completed in %v, processed %d/%d environment variables",
@@ -967,6 +1300,36 @@ func (c *Config) loadOrCreateConfig() error {
 
 	c.logger.Infof("Successfully loaded config file: %s", c.viper.ConfigFileUsed())
 	return nil
+}
+
+func (c *Config) applyOverlayFilesUnsafe() error {
+	if len(c.overlayFiles) == 0 {
+		return nil
+	}
+	for _, overlay := range c.overlayFiles {
+		if overlay == "" {
+			continue
+		}
+		if _, err := readFileAsNestedMap(overlay); err != nil {
+			return fmt.Errorf("overlay %s: %w", overlay, err)
+		}
+		c.viperLoaded = true
+		c.logger.Infof("Overlay config applied: %s", overlay)
+	}
+	return c.hydrateViperFromPersistentUnsafe()
+}
+
+func readFileAsNestedMap(path string) (map[string]any, error) {
+	v := viper.New()
+	v.SetConfigFile(path)
+	if err := v.ReadInConfig(); err != nil {
+		return nil, err
+	}
+	settings := v.AllSettings()
+	if settings == nil {
+		settings = make(map[string]any)
+	}
+	return settings, nil
 }
 
 func (c *Config) validateMode() error {
@@ -1092,8 +1455,10 @@ func (c *Config) reinitialize() error {
 		return fmt.Errorf("reinitialize env: %w", err)
 	}
 
-	// 同步环境变量和viper数据到原子存储
-	c.syncFromViperUnsafe()
+	// 同步文件层到原子存储（不含 env/flag）
+	if err := c.syncFromViperUnsafe(); err != nil {
+		return fmt.Errorf("reinitialize file layer: %w", err)
+	}
 
 	return nil
 }
@@ -1108,6 +1473,9 @@ func (c *Config) restoreSnapshot(snap *snapshot) {
 	defer c.mu.Unlock()
 
 	c.data.Store(deepCloneMap(snap.data))
+	if snap.overrides != nil {
+		c.overrides.Store(deepCloneMap(snap.overrides))
+	}
 	c.readCache.Store(deepCloneMap(snap.readCache))
 }
 
@@ -1149,17 +1517,118 @@ func (c *Config) storeData(newData map[string]any) {
 	c.data.Store(dataCopy)
 }
 
-// syncFromViperUnsafe 从viper同步数据到原子存储（不加锁，用于已在锁内的场景）
-func (c *Config) syncFromViperUnsafe() {
-	// 从viper获取所有数据并进行扁平化处理
-	viperData := c.viper.AllSettings()
-	flatData := make(map[string]any, len(viperData)*12)
-
-	// 将嵌套数据扁平化，例如 app.name, database.host 等
-	c.flattenViperData("", viperData, flatData)
-
-	// 原子性存储
+// syncFromViperUnsafe 同步「文件层」到原子存储（不加锁，用于已在锁内的场景）。
+// 必须从文件/内容独立解析，不能用 viper.AllSettings()：AutomaticEnv/BindPFlag 会把 env/flag 写进 AllSettings。
+func (c *Config) syncFromViperUnsafe() error {
+	nested, err := c.readPersistentNestedUnsafe()
+	if err != nil {
+		return err
+	}
+	flatData := make(map[string]any)
+	c.flattenViperData("", nested, flatData)
 	c.storeData(flatData)
+	return nil
+}
+
+func (c *Config) restoreFileLayer(prevData map[string]any) {
+	c.storeData(prevData)
+	_ = c.writeViperConfigLayer(c.reconstructNestedStructure(prevData))
+}
+
+func (c *Config) hydrateViperFromPersistentUnsafe() error {
+	nested, err := c.readPersistentNestedUnsafe()
+	if err != nil {
+		return err
+	}
+	return c.writeViperConfigLayer(nested)
+}
+
+func (c *Config) writeViperConfigLayer(nested map[string]any) error {
+	if c.viper == nil {
+		return nil
+	}
+	if nested == nil {
+		nested = map[string]any{}
+	}
+	data, err := c.marshalConfigWithData(nested)
+	if err != nil {
+		return err
+	}
+	return c.viper.ReadConfig(bytes.NewReader(data))
+}
+
+func (c *Config) readPersistentNestedUnsafe() (map[string]any, error) {
+	nested := make(map[string]any)
+
+	if path := c.configFilePath(); path != "" {
+		if _, err := os.Stat(path); err == nil {
+			loaded, err := c.readIsolatedConfigFile(path)
+			if err != nil {
+				return nil, err
+			}
+			nested = loaded
+		} else if c.content != "" {
+			loaded, err := parseConfigBytesIsolated([]byte(c.content), c.mode)
+			if err != nil {
+				return nil, err
+			}
+			nested = loaded
+		}
+	} else if c.content != "" {
+		loaded, err := parseConfigBytesIsolated([]byte(c.content), c.mode)
+		if err != nil {
+			return nil, err
+		}
+		nested = loaded
+	}
+
+	for _, overlay := range c.overlayFiles {
+		if overlay == "" {
+			continue
+		}
+		over, err := readFileAsNestedMap(overlay)
+		if err != nil {
+			return nil, fmt.Errorf("overlay %s: %w", overlay, err)
+		}
+		nested = deepMerge(nested, over)
+	}
+	if nested == nil {
+		nested = make(map[string]any)
+	}
+	return nested, nil
+}
+
+func (c *Config) readIsolatedConfigFile(path string) (map[string]any, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if c.cryptoOptions.Enabled && c.crypto != nil && c.crypto.IsEncrypted(data) {
+		data, err = c.crypto.Decrypt(data)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt config file: %w", err)
+		}
+	}
+	mode := c.mode
+	if mode == "" {
+		mode = strings.TrimPrefix(filepath.Ext(path), ".")
+	}
+	return parseConfigBytesIsolated(data, mode)
+}
+
+func parseConfigBytesIsolated(data []byte, mode string) (map[string]any, error) {
+	v := viper.New()
+	if mode != "" {
+		v.SetConfigType(mode)
+	}
+	if err := v.ReadConfig(strings.NewReader(string(data))); err != nil {
+		return nil, err
+	}
+	settings := v.AllSettings()
+	if settings == nil {
+		settings = make(map[string]any)
+	}
+	return settings, nil
 }
 
 // flattenViperData 递归扁平化viper数据
@@ -1181,29 +1650,33 @@ func (c *Config) flattenViperData(prefix string, data map[string]any, result map
 
 // getRaw 无锁读取原始配置值
 func (c *Config) getRaw(key string) (any, bool) {
+	if value, exists := c.lookupOverride(key); exists {
+		return value, true
+	}
+	if value, exists := c.lookupFlagValue(key); exists {
+		return value, true
+	}
 	if value, exists := c.lookupEnvValue(key); exists {
 		return value, true
 	}
 
 	data := c.loadData()
 
-	// 首先尝试直接匹配
-	if value, exists := data[key]; exists {
+	if value, exists := lookupMapValue(data, key); exists {
 		return value, true
 	}
 
-	// 处理嵌套键查找
 	if strings.Contains(key, ".") {
-		return c.getNestedValueFromData(data, key)
+		if value, ok := c.getNestedValueFromData(data, key); ok {
+			return value, true
+		}
 	}
 
-	// 尝试重构嵌套对象（用于向后兼容）
-	if value, found := c.reconstructNestedValue(data, key); found {
+	if value, found := c.reconstructNestedValue(c.mergeEffectiveFlat(), key); found {
 		return value, true
 	}
 
-	// 回退到 viper 与环境变量查询，确保环境值立即可见
-	return c.fetchFromViperOrEnv(key)
+	return nil, false
 }
 
 func (c *Config) lookupEnvValue(key string) (any, bool) {
@@ -1211,21 +1684,80 @@ func (c *Config) lookupEnvValue(key string) (any, bool) {
 		return nil, false
 	}
 
-	c.mu.RLock()
-	envOptions := c.envOptions
-	c.mu.RUnlock()
-
-	if !envOptions.Enabled {
+	// 读取无锁快照，避免热路径上的 RLock 争抢
+	snapshot := c.envSnapshot.Load()
+	if snapshot == nil || !snapshot.Enabled {
 		return nil, false
 	}
 
-	envKeys := c.deriveEnvKeys(envOptions, key)
-	for _, envKey := range envKeys {
+	for _, envKey := range c.deriveEnvKeys(*snapshot, key) {
 		if val, ok := os.LookupEnv(envKey); ok {
 			return val, true
 		}
 	}
+	if snapshot.SmartCase {
+		for _, envKey := range c.envAliasKeys(key) {
+			if val, ok := os.LookupEnv(envKey); ok {
+				return val, true
+			}
+		}
+	}
 	return nil, false
+}
+
+func (c *Config) envAliasKeys(key string) []string {
+	aliases, _ := c.envAliases.Load().(map[string][]string)
+	if len(aliases) == 0 {
+		return nil
+	}
+	if keys, ok := aliases[key]; ok {
+		return keys
+	}
+	if keys, ok := aliases[strings.ToLower(key)]; ok {
+		return keys
+	}
+	return nil
+}
+
+func (c *Config) envOnlyConfigKeys() []string {
+	seen := make(map[string]struct{})
+	for _, key := range c.envAliasConfigKeys() {
+		seen[key] = struct{}{}
+	}
+
+	snapshot := c.envSnapshot.Load()
+	if snapshot != nil && snapshot.Enabled && snapshot.Prefix != "" {
+		prefix := strings.ToUpper(snapshot.Prefix) + "_"
+		for _, env := range os.Environ() {
+			parts := strings.SplitN(env, "=", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			after, ok := strings.CutPrefix(strings.ToUpper(parts[0]), prefix)
+			if !ok || after == "" {
+				continue
+			}
+			seen[strings.ToLower(strings.ReplaceAll(after, "_", "."))] = struct{}{}
+		}
+	}
+
+	keys := make([]string, 0, len(seen))
+	for key := range seen {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func (c *Config) envAliasConfigKeys() []string {
+	aliases, _ := c.envAliases.Load().(map[string][]string)
+	if len(aliases) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(aliases))
+	for k := range aliases {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // fetchFromViperOrEnv 从 viper 或环境变量中查找配置值
@@ -1233,16 +1765,17 @@ func (c *Config) fetchFromViperOrEnv(key string) (any, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	if c.viper != nil && c.viperLoaded {
-		if c.viper.IsSet(key) || c.viper.InConfig(key) {
-			return c.viper.Get(key), true
-		}
+	if c.viper == nil || !c.viperLoaded {
+		return nil, false
 	}
 
-	if c.viper != nil && c.viperLoaded {
-		if val := c.viper.Get(key); hasConcreteValue(val) {
-			return val, true
-		}
+	// IsSet/InConfig 命中表示键被显式设置或存在于配置中，直接返回其值
+	if c.viper.IsSet(key) || c.viper.InConfig(key) {
+		return c.viper.Get(key), true
+	}
+	// 否则回退到 Get 探测（例如环境变量绑定），仅在取得具体值时判定为命中
+	if val := c.viper.Get(key); hasConcreteValue(val) {
+		return val, true
 	}
 
 	return nil, false
@@ -1425,19 +1958,16 @@ func (c *Config) getNestedValueFromData(data map[string]any, key string) (any, b
 
 // reconstructNestedValue 从扁平化数据重构嵌套对象（用于向后兼容）
 func (c *Config) reconstructNestedValue(data map[string]any, key string) (any, bool) {
-	// 查找以该键为前缀的所有扁平化键
-	prefix := key + "."
+	// 查找以该键为前缀的所有扁平化键（兼容 viper 小写键）
 	nested := make(map[string]any)
 	found := false
 
 	for k, v := range data {
-		if after, ok := strings.CutPrefix(k, prefix); ok {
-			// 移除前缀，获取相对路径
-			subKey := after
-			// 在嵌套map中设置值
-			c.setNestedValue(nested, subKey, v)
-			found = true
+		if len(k) <= len(key) || k[len(key)] != '.' || !strings.EqualFold(k[:len(key)], key) {
+			continue
 		}
+		c.setNestedValue(nested, k[len(key)+1:], v)
+		found = true
 	}
 
 	if found {
@@ -1577,7 +2107,7 @@ func (c *Config) IsSet(key string) bool {
 
 // Keys 获取所有配置键
 func (c *Config) Keys() []string {
-	data := c.loadData()
+	data := c.mergeEffectiveFlat()
 	keys := make([]string, 0, len(data))
 	for k := range data {
 		keys = append(keys, k)
@@ -1585,18 +2115,14 @@ func (c *Config) Keys() []string {
 	return keys
 }
 
-// AllSettings 获取所有配置（返回副本以保证线程安全）
+// AllSettings 获取所有有效配置（返回副本以保证线程安全）
 func (c *Config) AllSettings() map[string]any {
 	return c.snapshotAllSettings()
 }
 
-// snapshotAllSettings 在统一锁顺序下获取 viper 配置快照，避免并发读写竞态。
-// 锁顺序：cacheBuildMu -> mu.RLock -> writeMu
 func (c *Config) snapshotAllSettings() map[string]any {
 	if c == nil {
 		return nil
 	}
-
-	flatData := deepCloneMap(c.loadData())
-	return c.reconstructNestedStructure(flatData)
+	return c.reconstructNestedStructure(c.mergeEffectiveFlat())
 }

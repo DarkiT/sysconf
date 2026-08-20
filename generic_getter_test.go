@@ -1,6 +1,7 @@
 package sysconf
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -25,11 +26,17 @@ func TestGetAsWithError(t *testing.T) {
 	assert.Equal(t, 8080, val)
 
 	_, err = GetAsWithError[int](cfg, "missing")
-	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrKeyNotFound)
 
 	require.NoError(t, cfg.Set("bad", "oops"))
 	_, err = GetAsWithError[int](cfg, "bad")
-	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrConversion)
+
+	_, err = GetAsWithError[int](cfg, "")
+	assert.ErrorIs(t, err, ErrEmptyKey)
+
+	_, err = GetAsWithError[int](nil, "port")
+	assert.ErrorIs(t, err, ErrNilConfig)
 }
 
 func TestMustGetAs(t *testing.T) {
@@ -76,9 +83,7 @@ func TestMustGetAsVariousTypes(t *testing.T) {
 func TestGetAsCacheDefaultAndFailure(t *testing.T) {
 	cfg := setupConfig(t)
 
-	// cache 命中路径
-	cfg.cacheEnabled.Store(true)
-	cfg.readCache.Store(map[string]any{"cached": "123"})
+	require.NoError(t, cfg.Set("cached", "123"))
 	assert.Equal(t, 123, GetAs[int](cfg, "cached"))
 
 	// 空键返回默认或零值
@@ -138,4 +143,30 @@ func TestGetWithFallback(t *testing.T) {
 	assert.Equal(t, "p", GetWithFallback[string](cfg, "primary", "backup"))
 	assert.Equal(t, "b", GetWithFallback[string](cfg, "missing", "backup"))
 	assert.Equal(t, 0, GetWithFallback[int](cfg, "missing", "")) // 全部缺失返回零值
+}
+
+func TestGetAsRespectsEnvOverCache(t *testing.T) {
+	require.NoError(t, os.Setenv("GETAS_SERVER_PORT", "9090"))
+	t.Cleanup(func() { _ = os.Unsetenv("GETAS_SERVER_PORT") })
+
+	cfg, err := New(
+		WithContent("server:\n  port: 8080\n"),
+		WithMode("yaml"),
+		WithEnv("GETAS"),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cfg.Close() })
+
+	// 即使缓存里是文件值，GetAs 也必须与 GetInt 一样优先读环境变量。
+	cfg.cacheEnabled.Store(true)
+	cfg.readCache.Store(map[string]any{"server.port": 8080})
+
+	assert.Equal(t, 9090, GetAs[int](cfg, "server.port"))
+	assert.Equal(t, 9090, cfg.GetInt("server.port"))
+}
+
+func TestGetSliceAsDefault(t *testing.T) {
+	cfg := setupConfig(t)
+	assert.Equal(t, []int{1, 2}, GetSliceAs[int](cfg, "missing", []int{1, 2}))
+	assert.Empty(t, GetSliceAs[int](cfg, "missing"))
 }

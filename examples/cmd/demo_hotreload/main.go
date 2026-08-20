@@ -67,6 +67,7 @@ func main() {
 			Enabled:   true,
 			SmartCase: true,
 		}),
+		sysconf.WithSkipInitValidation(),
 		sysconf.WithValidators(
 			validation.NewDatabaseValidator(),
 			validation.NewWebServerValidator(),

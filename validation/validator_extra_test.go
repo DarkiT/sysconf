@@ -34,6 +34,17 @@ func TestDefaultValidatorRules(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "email group host is not an email field",
+			cfg: map[string]any{
+				"email": map[string]any{
+					"smtp": map[string]any{
+						"host": "smtp.gmail.com",
+						"port": 587,
+					},
+				},
+			},
+		},
+		{
 			name: "invalid timeout/url/email/host",
 			cfg: map[string]any{
 				"service": map[string]any{

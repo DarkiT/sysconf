@@ -1,12 +1,22 @@
 package validation
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
 )
+
+// ruleError 统一规则错误：自定义 Message 非空时用之，否则回落到底层校验器的真实错误。
+// 避免六个显式分支吞掉真实原因，也避免 Message 为空时返回 Error() 为空串的非 nil error。
+func ruleError(message string, err error) error {
+	if message != "" {
+		return errors.New(message)
+	}
+	return err
+}
 
 // ValidationRule 验证规则
 type ValidationRule struct {
@@ -30,27 +40,27 @@ func Validate(value interface{}, rule ValidationRule) error {
 		}
 	case "min":
 		if err = validateMin(value, rule.Value); err != nil {
-			return fmt.Errorf("%s", rule.Message)
+			return ruleError(rule.Message, err)
 		}
 	case "max":
 		if err = validateMax(value, rule.Value); err != nil {
-			return fmt.Errorf("%s", rule.Message)
+			return ruleError(rule.Message, err)
 		}
 	case "range":
 		if err = validateRangeValue(value, rule.Value); err != nil {
-			return fmt.Errorf("%s", rule.Message)
+			return ruleError(rule.Message, err)
 		}
 	case "length":
 		if err = validateLengthValue(value, rule.Value); err != nil {
-			return fmt.Errorf("%s", rule.Message)
+			return ruleError(rule.Message, err)
 		}
 	case "pattern":
 		if err = validatePattern(value, rule.Value); err != nil {
-			return fmt.Errorf("%s", rule.Message)
+			return ruleError(rule.Message, err)
 		}
 	case "enum":
 		if err = validateEnumValue(value, rule.Value); err != nil {
-			return fmt.Errorf("%s", rule.Message)
+			return ruleError(rule.Message, err)
 		}
 	default:
 		// 使用 rules.go 中的验证器处理其他类型
@@ -336,8 +346,12 @@ func ValidateStruct(v interface{}, rules map[string][]ValidationRule) error {
 
 	typ := val.Type()
 	for i := 0; i < val.NumField(); i++ {
-		field := val.Field(i)
 		fieldType := typ.Field(i)
+		// 跳过未导出字段：对其调用 Interface() 会 panic（value obtained from unexported field）
+		if !fieldType.IsExported() {
+			continue
+		}
+		field := val.Field(i)
 
 		if fieldRules, exists := rules[fieldType.Name]; exists {
 			for _, rule := range fieldRules {
