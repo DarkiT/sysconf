@@ -30,7 +30,8 @@
 │  │  ┌─────────────────────────────────────────┐  │              │
 │  │  │  data atomic.Value (map[string]any)    │  │              │
 │  │  │  mu sync.RWMutex                        │  │              │
-│  │  │  cache *Cache                           │  │              │
+│  │  │  readCache atomic.Value (读取缓存)      │  │              │
+│  │  │  envSnapshot atomic.Pointer[EnvOptions] │  │              │
 │  │  │  validators []ConfigValidator          │  │              │
 │  │  │  crypto ConfigCrypto                   │  │              │
 │  │  └─────────────────────────────────────────┘  │              │
@@ -64,9 +65,17 @@ type Config struct {
     
     // 并发控制
     mu sync.RWMutex // 保护元数据和写操作
+    wg sync.WaitGroup // Go 1.25+ WaitGroup.Go()，等待后台 goroutine 退出
+    
+    // 读取缓存（直接内嵌在 Config 上，无独立 Cache 类型）
+    readCache    atomic.Value // map[string]any，无锁读
+    cacheEnabled atomic.Bool
+    cacheTimer   *time.Timer  // 防抖重建定时器
+    
+    // 环境变量无锁读路径
+    envSnapshot atomic.Pointer[EnvOptions] // 只读快照，供读路径免锁访问
     
     // 功能模块
-    cache       *Cache              // 读取缓存
     validators  []ConfigValidator   // 验证器链
     crypto      ConfigCrypto        // 加密器
     
@@ -80,7 +89,8 @@ type Config struct {
 
 **设计要点**：
 - `atomic.Value` 实现**无锁读取**，微秒级性能
-- `sync.RWMutex` 保护**元数据**和**写操作**
+- `sync.RWMutex` 保护**元数据**和**写操作**；`envSnapshot` 等高频读字段则用独立的
+  `atomic.Pointer`/`atomic.Int64` 只读快照，连 `RWMutex.RLock()` 都不占，进一步降低热路径争抢
 - 数据与元数据分离，优化并发访问模式
 
 ### 2. Getter API 层
@@ -192,23 +202,25 @@ ChaCha20-Poly1305 认证加密：
 
 ### 6. 缓存模块 (Cache)
 
-原子缓存架构：
+缓存字段直接内嵌在 `Config` 结构体上（`cache.go`），没有独立的 `Cache` 类型：
 
 ```go
-type Cache struct {
-    data atomic.Value // map[string]*cacheEntry
-    mu   sync.RWMutex
-    
-    // 配置
-    warmDelay   time.Duration // 预热延迟
-    rebuildDelay time.Duration // 重建延迟
-}
+// Config 中与缓存相关的字段（节选）
+readCache         atomic.Value // 只读缓存，map[string]any，无锁读
+cacheEnabled      atomic.Bool  // 缓存开关
+cacheVersion      int64        // 缓存版本号
+cacheMu           sync.Mutex   // 缓存更新互斥锁
+cacheBuildMu      sync.Mutex   // 防止并发 updateReadCache 访问 viper map
+cacheTimer        *time.Timer  // 防抖重建定时器
+cacheWarmupDelay  time.Duration
+cacheRebuildDelay time.Duration
 ```
 
 **缓存策略**：
-- **延迟预热**：避免启动时大量缓存未命中
-- **延迟重建**：批量处理缓存失效，减少重建次数
-- **原子更新**：使用 `atomic.Value` 实现无锁读取
+- **延迟预热** (`cacheWarmupDelay`)：`enableReadCache` 在创建时调度一次异步预热，避免启动时大量缓存未命中
+- **延迟重建** (`cacheRebuildDelay`)：`invalidateCache` 先清空缓存，再用 `time.AfterFunc` 防抖调度重建，批量吸收短时间内的多次写入
+- **原子更新**：`updateReadCache` 通过 `snapshotAllSettings` 取得一致快照后，用 `atomic.Value.Store` 整体替换缓存，读路径永远拿到完整一致的 map
+- **优雅退出**：重建任务纳入 `Config.wg`（`wg.Go(...)`），`Close()` 的 `wg.Wait()` 能等到最后一次重建完成再返回
 
 ## 并发模型
 
@@ -268,6 +280,27 @@ type Cache struct {
        return nil
    }
    ```
+
+4. **统计与环境变量读取路径**（全原子，连 RLock 都不占）：
+   ```go
+   // Metrics.RecordGet/RecordSet 全程走 atomic，无 mu.Lock()
+   func (m *Metrics) RecordGet(duration time.Duration, cacheHit bool) {
+       atomic.AddInt64(&m.GetCount, 1)
+       m.lastGetNs.Store(time.Now().UnixNano()) // 而非 mu.Lock() 后赋值 time.Time
+   }
+
+   // lookupEnvValue 读取 envSnapshot 快照，而非对 envOptions 加 mu.RLock()
+   func (c *Config) lookupEnvValue(key string) (any, bool) {
+       snapshot := c.envSnapshot.Load()
+       if snapshot == nil || !snapshot.Enabled {
+           return nil, false
+       }
+       // ...
+   }
+   ```
+   Get/Set 默认开启指标采集，是访问频率最高的两个入口；一旦这里出现锁竞争，
+   前面 `atomic.Value` 带来的无锁读优势会被直接抵消。因此这两条路径不容许出现
+   `sync.Mutex`/`sync.RWMutex`，只能用 `atomic.*`。
 
 ### 竞态检测
 
@@ -437,8 +470,21 @@ BenchmarkConfig/MixedOperations-8      5000000    285 ns/op
 - 合并短时间内的多次更新
 - 避免配置文件频繁变动导致的热重载抖动
 
+### 4. 为什么 Metrics 与环境变量读取要从"加锁"改成"全原子"？
+
+- `Get` 默认开启指标采集，`RecordGet` 曾经用 `mu.Lock()` 写 `LastGetTime`；
+  高并发读场景下这把锁会成为瓶颈，实测 `BenchmarkConfigGetConcurrent`
+  并发吞吐反而低于串行（235ns/op vs 209ns/op 串行）
+- 改为 `atomic.Int64` 存储 UnixNano、`GetStats()` 时再转换回 `time.Time` 后，
+  同一基准并发降到 ~90ns/op，锁竞争完全消失
+- `envOptions` 同理：写入频率极低（仅初始化/`SetEnvPrefix` 时变更），
+  读取频率极高（每次 `Get` 未命中原子存储都会探测环境变量），
+  用 `atomic.Pointer[EnvOptions]` 发布只读快照，读路径不再需要 `mu.RLock()`
+- 代价：`Reset()`/`SetEnvPrefix()` 等低频路径要多维护一份原子字段，
+  但热路径的收益远大于这点复杂度
+
 ---
 
-**文档版本**: 1.0  
-**最后更新**: 2026-03-03  
+**文档版本**: 1.1
+**最后更新**: 2026-07-04
 **维护者**: darkit/sysconf 团队

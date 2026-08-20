@@ -3,7 +3,7 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/darkit/sysconf.svg)](https://pkg.go.dev/github.com/darkit/sysconf)
 [![Go Report Card](https://goreportcard.com/badge/github.com/darkit/sysconf)](https://goreportcard.com/report/github.com/darkit/sysconf)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/darkit/sysconf/blob/master/LICENSE)
-[![Go Version](https://img.shields.io/badge/go-1.24+-blue.svg)](https://golang.org/dl/)
+[![Go Version](https://img.shields.io/badge/go-1.25+-blue.svg)](https://golang.org/dl/)
 
 **Sysconf** 是一个高性能、线程安全的Go配置管理库，专为企业级应用设计。采用原子存储技术和智能验证系统，提供可靠的并发访问支持。
 
@@ -38,11 +38,33 @@
 go get github.com/darkit/sysconf
 ```
 
-**系统要求**: Go 1.24+
+**系统要求**: Go 1.25+
 
 ## 🚀 快速开始
 
 ### 基础使用
+
+生产应用推荐一次完成加载与结构体解码：
+
+```go
+type AppConfig struct {
+    Server struct {
+        Host string `config:"host" default:"0.0.0.0"`
+        Port int    `config:"port" default:"8080"`
+    } `config:"server"`
+}
+
+app, cfg, err := sysconf.Load[AppConfig](
+    sysconf.WithPath("config.yaml"),
+    sysconf.WithEnv("MYAPP"),
+)
+if err != nil {
+    log.Fatal(err)
+}
+defer cfg.Close()
+```
+
+也可以先拿 `*Config` 再按键读取：
 
 ```go
 package main
@@ -115,6 +137,8 @@ server:
 // 集成智能验证器系统
 cfg, err := sysconf.New(
     sysconf.WithContent(defaultConfig),
+    // 预定义验证器规则较全，仅作 Set 字段拦截时请跳过启动整份校验
+    sysconf.WithSkipInitValidation(),
     sysconf.WithValidators(
         validation.NewDatabaseValidator(),  // 数据库配置验证
         validation.NewWebServerValidator(), // Web服务器配置验证
@@ -131,15 +155,15 @@ cfg.Set("database.host", "localhost") // ✅ 有效主机名
 ### 类型安全的泛型API
 
 ```go
-// 🆕 现代化泛型API，编译时类型安全
-host := GetAs[string](cfg, "database.host", "localhost")
-port := GetAs[int](cfg, "database.port", 5432)
-timeout := GetAs[time.Duration](cfg, "timeout", 30*time.Second)
-apiKey := MustGetAs[string](cfg, "api.secret_key") // 缺失或转换失败时 panic
+// 泛型 API 是包级函数（Go 不允许泛型方法），与 Get* 走同一条分层路径
+host := sysconf.GetAs[string](cfg, "database.host", "localhost")
+port := sysconf.GetAs[int](cfg, "database.port", 5432)
+timeout := sysconf.GetAs[time.Duration](cfg, "timeout", 30*time.Second)
+apiKey := sysconf.MustGetAs[string](cfg, "api.secret_key") // 缺失或转换失败时 panic
 
 // 泛型切片支持
-features := GetSliceAs[string](cfg, "server.features")
-ports := GetSliceAs[int](cfg, "server.ports")
+features := sysconf.GetSliceAs[string](cfg, "server.features")
+ports := sysconf.GetSliceAs[int](cfg, "server.ports")
 ```
 
 #### MustGetAs[T] - 强制获取（新增）
@@ -213,6 +237,8 @@ func (c *Config) loadData() map[string]any {
 - 支持多协程并发读写
 - 通过 race detector 测试
 - 稳定的性能表现
+- 指标采集（`Metrics.RecordGet/RecordSet`）与环境变量读取路径均为全原子实现，
+  不占用 `mu`，`BenchmarkConfigGetConcurrent` 实测由 235ns/op 降至 ~90ns/op
 
 ## 🛡️ 智能验证系统
 
@@ -420,7 +446,35 @@ func main() {
 }
 ```
 
-**优先级顺序**: 命令行参数 > 环境变量 > 配置文件 > 默认值
+**优先级顺序**: 显式 `Set` > 命令行 flag > 环境变量 > 配置文件/内联内容 > getter/struct 默认值
+
+`Get*` / `GetAs` / `Unmarshal` / `AllSettings` / `Load` 共用这条路径。写盘只保存文件层与 `Set` 的值，不会把 env/flag 持久化。
+
+多文件叠加：
+
+```go
+cfg, err := sysconf.New(
+    sysconf.WithFiles("config.yaml", "config.local.yaml"), // 后者覆盖前者
+    sysconf.WithEnv("MYAPP"),
+)
+if err != nil {
+    log.Fatal(err)
+}
+defer cfg.Close()
+_ = cfg.Flush() // 立即把待写入的 Set 落到磁盘
+```
+
+热重载除 `Watch` 外可用 `OnChange` 拿到前后快照；校验失败时内存保持旧值：
+
+```go
+_ = cfg.OnChange(func(prev, next map[string]any, err error) {
+    if err != nil {
+        log.Printf("reload rejected: %v", err)
+        return
+    }
+    updateApplication(next)
+})
+```
 
 ## 🔄 配置热重载
 
@@ -450,7 +504,7 @@ stop()
 - ✅ **防抖机制**: 默认 200ms 内多次变更只触发一次（可通过 `WithWatchDebounce` 调整）
 - ✅ **并发安全**: 配置更新期间服务不中断
 - ✅ **错误恢复**: 配置验证失败时自动回滚
-- ✅ **智能监控**: 只监控实际的文件写入操作
+- ✅ **智能监控**: 监控主文件与 `WithFiles`/`WithOverlay` 叠加文件的写入/替换
 - ✅ **可控监听**: 使用 `WatchWithContext` 可在需要时取消监听
 
 > 需要显式关闭热重载时，可调用 `cancel := cfg.WatchWithContext(ctx, callbacks...)` 并在退出流程中执行 `cancel()`。
@@ -478,6 +532,8 @@ cfg, err := sysconf.New(
 - `Set` 操作会对 map、slice 做深拷贝，防止调用方后续修改原始数据污染内部状态。
 - 嵌套结构会自动展开为扁平键，配合缓存失效保证每次读取都是一致数据。
 - 示例 `examples/main.go` 展示了设置 `parent.child` 后继续修改原始 map，读取结果仍保持 "原始值"。
+- `Marshal` 内部会先把结构体拍平为点分隔键，再通过 `SetMultiple` 一次性提交：
+  同一批字段要么全部生效，要么校验失败时整体不写入，不会出现部分字段已落地的中间态。
 
 ## 📝 配置文件格式
 
@@ -614,20 +670,20 @@ params := cfg.GetStringMapString("http.headers")  // map[string]string
 ### 泛型API (推荐)
 
 ```go
-// 🆕 类型安全的泛型获取
-host := GetAs[string](cfg, "database.host", "localhost")
-port := GetAs[int](cfg, "database.port", 5432)
-timeout := GetAs[time.Duration](cfg, "timeout", 30*time.Second)
+// 类型安全的泛型获取（包级函数）
+host := sysconf.GetAs[string](cfg, "database.host", "localhost")
+port := sysconf.GetAs[int](cfg, "database.port", 5432)
+timeout := sysconf.GetAs[time.Duration](cfg, "timeout", 30*time.Second)
 
-// 🆕 泛型切片
-features := GetSliceAs[string](cfg, "server.features")
-ports := GetSliceAs[int](cfg, "server.ports")
+// 泛型切片
+features := sysconf.GetSliceAs[string](cfg, "server.features")
+ports := sysconf.GetSliceAs[int](cfg, "server.ports")
 
-// 🆕 必须存在的配置（不存在则panic）
-apiKey := MustGetAs[string](cfg, "api.secret_key")
+// 必须存在的配置（不存在则 panic）
+apiKey := sysconf.MustGetAs[string](cfg, "api.secret_key")
 
-// 🆕 支持多个fallback键
-port := GetWithFallback[int](cfg, "server.port", "app.port", "port")
+// 支持多个 fallback 键
+port := sysconf.GetWithFallback[int](cfg, "server.port", "app.port", "port")
 ```
 
 ## 🔧 高级配置选项
@@ -801,9 +857,10 @@ func BenchmarkConfig(b *testing.B) {
 ### 调试技巧
 
 ```go
-// 启用调试日志
+// 启用调试日志：实现 sysconf.Logger 接口（Debug/Info/Warn/Error/Fatal 及 xxxf 变体），
+// 通过 WithLogger 注入即可（没有 WithLogLevel 这类便利函数）
 cfg, err := sysconf.New(
-    sysconf.WithLogLevel("debug"),  // 开启详细日志
+    sysconf.WithLogger(myLogger), // myLogger 需实现 sysconf.Logger 接口
     // ... 其他选项
 )
 
@@ -1036,7 +1093,7 @@ go run .
 - ✅ **动态匹配**: 验证器自动推断
 - ✅ **企业级特性**: 加密、验证、热重载完整支持
 - ✅ **稳定性**: 生产就绪，已通过大规模测试
-- ✅ **兼容性**: Go 1.23+ 支持，向后兼容现有代码
+- ✅ **兼容性**: Go 1.25+ 支持，向后兼容现有代码
 - ✅ **文档**: 完整的API文档和最佳实践指南
 - ✅ **测试**: 完善的测试覆盖，包含并发和性能基准测试
 
